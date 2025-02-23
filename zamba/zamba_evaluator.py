@@ -121,7 +121,6 @@ class ZambaEvaluator:
     def evaluate(self, 
                  corpus: dict[str, dict[str, str]], 
                  queries: dict[str, str],
-                 num_test_samples: int = 100
                 ) -> dict[str, dict[str, float]]:
         """
         Evaluate all query-document pairs from the BEIR dataset using Zamba.
@@ -135,8 +134,6 @@ class ZambaEvaluator:
                   Format: {query_id: {doc_id: score, ...}, ...}
         """
         results = {}
-        if num_test_samples > 0: # -1 for all samples
-            queries = dict(list(queries.items())[:num_test_samples])
 
         for qid, query in tqdm(queries.items(), desc="Evaluating queries"):
             results[qid] = {}
@@ -148,3 +145,59 @@ class ZambaEvaluator:
                 logging.info(f"Query ID: {qid} | Document ID: {doc_id} | Score: {score} | Answer: {answer}")
 
         return results
+    
+    def evaluate_metrics(self, 
+                         qrels: dict[str, dict[str, int]], 
+                         results: dict[str, dict[str, float]], 
+                         k_values: list[int] = [1, 3, 5, 10, 100, 1000]
+                        ) -> dict[str, float]:
+        """
+        Calculate evaluation metrics (NDCG@k, MAP@k, Recall@k, Precision@k) using pytrec_eval.
+
+        Parameters:
+            qrels (dict): Ground truth relevance judgments.
+            results (dict): Scores from ZambaEvaluator.
+            k_values (list): List of cutoff values.
+
+        Returns:
+            A dictionary with the aggregated metric scores.
+        """
+        # Build metric keys for pytrec_eval.
+        map_key = "map_cut." + ",".join([str(k) for k in k_values])
+        ndcg_key = "ndcg_cut." + ",".join([str(k) for k in k_values])
+        recall_key = "recall." + ",".join([str(k) for k in k_values])
+        precision_key = "P." + ",".join([str(k) for k in k_values])
+        
+        evaluator = pytrec_eval.RelevanceEvaluator(
+            qrels, {map_key, ndcg_key, recall_key, precision_key}
+        )
+        scores = evaluator.evaluate(results)
+
+        ndcg, _map, recall, precision = {}, {}, {}, {}
+        # Initialize metrics for each k value.
+        for k in k_values:
+            ndcg[f"NDCG@{k}"] = 0.0
+            _map[f"MAP@{k}"] = 0.0
+            recall[f"Recall@{k}"] = 0.0
+            precision[f"P@{k}"] = 0.0
+
+        for query_id in scores.keys():
+            for k in k_values:
+                ndcg[f"NDCG@{k}"] += scores[query_id][f"ndcg_cut_{k}"]
+                _map[f"MAP@{k}"] += scores[query_id][f"map_cut_{k}"]
+                recall[f"Recall@{k}"] += scores[query_id][f"recall_{k}"]
+                precision[f"P@{k}"] += scores[query_id][f"P_{k}"]
+
+        num_queries = len(scores)
+        for k in k_values:
+            ndcg[f"NDCG@{k}"] = round(ndcg[f"NDCG@{k}"] / num_queries, 5)
+            _map[f"MAP@{k}"] = round(_map[f"MAP@{k}"] / num_queries, 5)
+            recall[f"Recall@{k}"] = round(recall[f"Recall@{k}"] / num_queries, 5)
+            precision[f"P@{k}"] = round(precision[f"P@{k}"] / num_queries, 5)
+
+        metrics = {}
+        metrics.update(ndcg)
+        metrics.update(_map)
+        metrics.update(recall)
+        metrics.update(precision)
+        return metrics

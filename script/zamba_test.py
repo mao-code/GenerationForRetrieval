@@ -64,20 +64,39 @@ def main():
 
     # Load the BEIR dataset
     corpus, queries, qrels = GenericDataLoader(data_folder=data_path).load(split="test")
-    
+    num_test_samples = args.num_test_samples
+
+    if num_test_samples > 0: # -1 for all samples
+        queries = dict(list(queries.items())[:num_test_samples])
+        qrels = dict(list(qrels.items())[:num_test_samples])
+        
     # Initialize ZambaEvaluator with the chosen model and scoring mode
     evaluator = ZambaEvaluator(model_name=args.model, score_type=args.score_type)
     
     # Evaluate using Zamba
-    results = evaluator.evaluate(corpus, queries, num_test_samples=args.num_test_samples)
+    results = evaluator.evaluate(corpus, queries)
     
-    # Save the evaluation results to a file
+    # Calculate evaluation metrics
+    k_values = [1, 3, 5, 10, 100, 1000]
+    metrics = evaluator.evaluate_metrics(qrels, results, k_values=k_values)
+    
+    # Save the evaluation results and metrics to files.
     results_dir = os.path.join(pathlib.Path(__file__).parent.absolute(), "results")
     os.makedirs(results_dir, exist_ok=True)
+    
     results_file = os.path.join(results_dir, f"{dataset}_zamba_results.json")
+    metrics_file = os.path.join(results_dir, f"{dataset}_zamba_metrics.json")
+    
     with open(results_file, "w") as f:
         json.dump(results, f, indent=4)
+    with open(metrics_file, "w") as f:
+        json.dump(metrics, f, indent=4)
+    
     print(f"Results saved to {results_file}")
+    print(f"Metrics saved to {metrics_file}")
+    print("Evaluation Metrics:")
+    for metric, score in metrics.items():
+        print(f"{metric}: {score}")
 
 if __name__ == '__main__':
     main()
@@ -86,6 +105,6 @@ if __name__ == '__main__':
     python -m script.zamba_test \
     --dataset nq \
     --model Zyphra/Zamba-7B-v1 \
-    --score_type binary \
-    --num_test_samples 100
+    --score_type ordered \
+    --num_test_samples 3
     """
