@@ -10,6 +10,7 @@ import pathlib, os
 import argparse
 import logging
 from zamba.zamba_evaluator import ZambaEvaluator
+import json
 
 # Setup logging
 logging.basicConfig(
@@ -36,6 +37,13 @@ def parse_args():
         choices=['binary', 'ordered'],
         help="Scoring type: 'binary' (yes/no) or 'ordered' (high/mid/low)"
     )
+    parser.add_argument(
+        '--num_test_samples',
+        type=int,
+        default=100,
+        help='Number of test samples to evaluate. -1 for all samples.'
+    )
+
     args = parser.parse_args()
     return args
 
@@ -61,7 +69,7 @@ def main():
     evaluator = ZambaEvaluator(model_name=args.model, score_type=args.score_type)
     
     # Evaluate using Zamba
-    results = evaluator.evaluate(corpus, queries)
+    results = evaluator.evaluate(corpus, queries, num_test_samples=args.num_test_samples)
     
     # Save the evaluation results to a file
     results_dir = os.path.join(pathlib.Path(__file__).parent.absolute(), "results")
@@ -73,3 +81,11 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+    """
+    python -m script.zamba_test \
+    --dataset nq \
+    --model Zyphra/Zamba-7B-v1 \
+    --score_type binary \
+    --num_test_samples 100
+    """
