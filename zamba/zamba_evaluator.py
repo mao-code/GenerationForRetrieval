@@ -2,6 +2,7 @@ import logging
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from tqdm import tqdm
+import pytrec_eval
 
 class ZambaEvaluator:
     def __init__(self, 
@@ -41,7 +42,7 @@ class ZambaEvaluator:
                 f"Document: '''{document}'''\n\n"
                 f"Query: '''{query}'''\n\n"
                 "Is the document relevant enough to answer the query?\n\n"
-                "Answer with exactly one word: 'yes' or 'no'.\n"
+                "Directly answer with exactly one word: 'yes' or 'no'.\n"
                 "Do not add any additional text or commentary.\n"
                 "Answer:"                
             )
@@ -50,7 +51,7 @@ class ZambaEvaluator:
                 f"Document: '''{document}'''\n"
                 f"Query: '''{query}'''\n"
                 "Rate the relevance of the document to answer the query as 'high', 'mid', or 'low'.\n\n"
-                "Answer with exactly one word: 'high', 'mid', or 'low'.\n" 
+                "Directly answer with exactly one word: 'high', 'mid', or 'low'.\n" 
                 "Do not add any additional text or commentary.\n"
                 "Answer:"
             )
@@ -76,23 +77,33 @@ class ZambaEvaluator:
                 # If response is unclear, default to 0.
                 return 0.0
 
-    def ask_zamba(self, query: str, document: str) -> tuple[float, str]:
+    def ask_zamba(self, query: str, document: str) -> tuple[float, str, float]:
         """
-        Ask Zamba the prompt and return the relevance score along with the raw answer.
+        Ask Zamba the prompt and return:
+            - a binary/graded relevance score (based on the parsed response),
+            - the raw answer string,
+            - and the logit for the token 'yes' (as a continuous confidence signal).
         """
         prompt = self.get_prompt(query, document)
         logging.info(f"Full Prompt:\n{prompt}")
 
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        # Use generate with output_scores to extract token logits
         outputs = self.model.generate(
             **inputs, 
             max_new_tokens=self.max_new_tokens,
-            do_sample=False, # Greedy decoding
-            num_beams=1,     # If Beam search
-            temperature=0.0    # Eliminates randomness (if do_sample=True)
+            do_sample=False,  # Greedy decoding
+            num_beams=1,
+            temperature=0.0,  # Eliminates randomness (if do_sample=True)
+            output_scores=True,
+            return_dict_in_generate=True
         )
-        full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-
+        # Extract the logit for the first generated token (i.e., the next token after the prompt)
+        first_token_logits = outputs.scores[0][0]  # shape: (vocab_size,)
+        yes_token_id = self.tokenizer.encode("yes", add_special_tokens=False)[0]
+        yes_logit = first_token_logits[yes_token_id].item()
+        
+        full_response = self.tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
         # Assume Zamba's answer follows immediately after the prompt.
         answer_raw = full_response[len(prompt):].strip()
         logging.info(f"Full Answer:\n{answer_raw}")
@@ -116,7 +127,7 @@ class ZambaEvaluator:
 
         score = self.parse_response(answer)
 
-        return score, answer
+        return score, answer, yes_logit
 
     def evaluate(self, 
                  corpus: dict[str, dict[str, str]], 
@@ -140,9 +151,10 @@ class ZambaEvaluator:
             for doc_id, doc in corpus.items():
                 # Combine title and text for a more complete document context.
                 document_text = f"{doc.get('title', '')}\n{doc.get('text', '')}"
-                score, answer = self.ask_zamba(query, document_text)
-                results[qid][doc_id] = score
-                logging.info(f"Query ID: {qid} | Document ID: {doc_id} | Score: {score} | Answer: {answer}")
+                score, answer, yes_logit = self.ask_zamba(query, document_text)
+                # results[qid][doc_id] = score
+                results[qid][doc_id] = yes_logit
+                logging.info(f"Query ID: {qid} | Document ID: {doc_id} | Score: {score} | Answer:   {answer} | Yes Logit: {yes_logit}")
 
         return results
     

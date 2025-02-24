@@ -105,6 +105,6 @@ if __name__ == '__main__':
     python -m script.zamba_test \
     --dataset nq \
     --model Zyphra/Zamba-7B-v1 \
-    --score_type ordered \
+    --score_type binary \
     --num_test_samples 3
     """
