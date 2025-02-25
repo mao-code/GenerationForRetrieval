@@ -83,7 +83,7 @@ def main():
     # === Stage 1: Initial Retrieval using Snowflake Sentence Embeddings ===
     # Initialize the embedding model (using the Snowflake model)
     embed_model = models.SentenceBERT("Snowflake/snowflake-arctic-embed-l")
-    retriever = DRES(embed_model, batch_size=16)
+    retriever = DRES(embed_model, batch_size=256)
     top_k_retrieval = args.top_k_retrieval  # e.g., retrieve top 100 docs per query
 
     logging.info("Performing initial retrieval using Snowflake embeddings...")
@@ -138,10 +138,10 @@ if __name__ == '__main__':
 
     """
     python -m script.zamba_test \
-    --dataset nq \
+    --dataset fiqa \
     --model Zyphra/Zamba-7B-v1 \
     --score_type binary \
-    --num_test_samples 3 \
-    --top_k_retrieval 1000 \
-    --top_k_rerank 100 \
+    --num_test_samples 100 \
+    --top_k_retrieval 100 \
+    --top_k_rerank 100
     """

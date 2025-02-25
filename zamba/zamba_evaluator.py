@@ -29,6 +29,7 @@ class ZambaEvaluator:
             model_name, device_map="auto", torch_dtype=torch.float16
         )
         self.device = device
+        self.model.to(self.device)
         self.max_new_tokens = max_new_tokens
         logging.info(f"Initialized ZambaEvaluator with model {model_name} in {score_type} mode.")
 
