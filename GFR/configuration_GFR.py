@@ -16,8 +16,8 @@
 
 import math
 
-from ...configuration_utils import PretrainedConfig
-from ...utils import logging
+from transformers.configuration_utils import PretrainedConfig
+from transformers.utils import logging
 
 
 logger = logging.get_logger(__name__)
@@ -130,7 +130,7 @@ class GFRConfig(PretrainedConfig):
         hidden_size=3712,
         attention_hidden_size=None,
         intermediate_size=14848,
-        num_hidden_layers=76,
+        num_hidden_layers=10, # N GFRBlocks
         num_attention_heads=16,
         attention_head_dim=None,
         num_key_value_heads=16,
@@ -205,12 +205,12 @@ class GFRConfig(PretrainedConfig):
         self.mamba_conv_bias = mamba_conv_bias
         self.mamba_proj_bias = mamba_proj_bias
 
-        if mamba_hidden_size is not None:
-            self.mamba_hidden_size = 2 * mamba_hidden_size # Concatenate
+        if mamba_hidden_size is None:
+            self.mamba_hidden_size = 2 * self.hidden_size # Concatenate
         else:
-            self.mamba_hidden_size = self.hidden_size
+            self.mamba_hidden_size = mamba_hidden_size 
 
-        self.layers_block_type = self._layers_block_type(num_hidden_layers, attn_layer_period, attn_layer_offset)
+        # self.layers_block_type = self._layers_block_type(num_hidden_layers, attn_layer_period, attn_layer_offset)
 
         assert (
             self.mamba_expand * self.hidden_size
@@ -224,13 +224,13 @@ class GFRConfig(PretrainedConfig):
             **kwargs,
         )
 
-    def _layers_block_type(self, num_hidden_layers, attn_layer_period, attn_layer_offset):
-        layers = [
-            "mamba",
-            "mamba",
-            "hybrid",
-        ] + ["hybrid" if i % attn_layer_period == attn_layer_offset else "mamba" for i in range(num_hidden_layers - 3)]
-        return layers
+    # def _layers_block_type(self, num_hidden_layers, attn_layer_period, attn_layer_offset):
+    #     layers = [
+    #         "mamba",
+    #         "mamba",
+    #         "hybrid",
+    #     ] + ["hybrid" if i % attn_layer_period == attn_layer_offset else "mamba" for i in range(num_hidden_layers - 3)]
+    #     return layers
 
 
 __all__ = ["GFRConfig"]
