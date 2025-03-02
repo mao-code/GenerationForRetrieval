@@ -7,35 +7,63 @@
 #   tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 #
 # And your model is an instance of GFRModel.
+import argparse
 
 import torch
 from GFR.configuration_GFR import GFRConfig
 from GFR.modeling_GFR import GFRModel
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, BertTokenizer
 
-config = GFRConfig(
-    vocab_size=32000,
-    hidden_size=256,         # smaller hidden size for demo purposes
-    num_hidden_layers=4,       # fewer layers for faster training in demo
-    max_position_embeddings=512,
+import logging
+
+# Setup logging
+logging.basicConfig(
+    format="%(asctime)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=logging.INFO,
 )
 
-# Instantiate the model.
-model = GFRModel(config)
+def main():
+    logging.info("Initializing GFR model for inference...")
+    # Use the tokenizer from Zamba (did not have CLS and SEP token ids)
+    # tokenizer = AutoTokenizer.from_pretrained("Zyphra/Zamba-7B-v1") # Llama fast tokenizer
+    # Load the pre-trained BERT tokenizer
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
-# Use the tokenizer from Zamba
-tokenizer = AutoTokenizer.from_pretrained("Zyphra/Zamba-7B-v1")
+    config = GFRConfig(
+        vocab_size=len(tokenizer), 
+        hidden_size=256,         # smaller hidden size for demo purposes
+        num_hidden_block=3,
+        num_layers_per_block=8,
+        max_position_embeddings=512,
+    )
 
-# Example document and query.
-document = "This is an example document discussing machine learning techniques and applications."
-query = "What are the applications of machine learning?"
+    # Instantiate the model.
+    model = GFRModel(config)
+    model.to('cuda')
+    logging.info("Model initialized successfully.")
 
-# Prepare the input tensors.
-input_ids, token_type_ids = model.prepare_input(document, query, tokenizer, max_length=512)
+    # Example document and query.
+    document = "This is an example document discussing machine learning techniques and applications."
+    query = "What are the applications of machine learning?"
 
-# Set the model to evaluation mode.
-model.eval()
-with torch.no_grad():
-    # Forward pass through the model to get the relevance score.
-    relevance_score = model(input_ids=input_ids, token_type_ids=token_type_ids)
-    print("Predicted relevance score:", relevance_score.item())
+    # Prepare the input tensors.
+    logging.info("Preparing input tensors...")
+    input_ids, token_type_ids = model.prepare_input(document, query, tokenizer, max_length=512)
+    input_ids = input_ids.to('cuda')
+    token_type_ids = token_type_ids.to('cuda')
+
+    # Set the model to evaluation mode.
+    logging.info("Running inference...")
+    model.eval()
+    with torch.no_grad():
+        # Forward pass through the model to get the relevance score.
+        relevance_score = model(input_ids=input_ids, token_type_ids=token_type_ids)
+        print("Predicted relevance score:", relevance_score.item())
+
+if __name__ == '__main__':
+    main()
+
+    """
+    python -m script.gfr_test
+    """

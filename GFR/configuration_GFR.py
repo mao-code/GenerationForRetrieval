@@ -127,12 +127,11 @@ class GFRConfig(PretrainedConfig):
         self,
         vocab_size=32000,
         tie_word_embeddings=True,
-        hidden_size=3712,
-        attention_hidden_size=None,
-        intermediate_size=14848,
-        num_hidden_layers=10, # N GFRBlocks
+        hidden_size=3712, # divisible by 16 (attention heads)
+        intermediate_size=14848, # 4 * hidden_size
+        num_hidden_blocks=3, # N GFRBlocks,
+        num_layers_per_block=8, # 8 layers per block
         num_attention_heads=16,
-        attention_head_dim=None,
         num_key_value_heads=16,
         n_mamba_heads=2,
         hidden_act="gelu",
@@ -159,25 +158,16 @@ class GFRConfig(PretrainedConfig):
         mamba_conv_bias=True,
         mamba_proj_bias=False,
 
-        mamba_hidden_size=None,
         **kwargs,
     ):
         self.vocab_size = vocab_size
         self.tie_word_embeddings = tie_word_embeddings
         self.hidden_size = hidden_size
-        if attention_hidden_size is None:
-            # self.attention_hidden_size = 2 * hidden_size
-            self.attention_hidden_size = hidden_size
-        else:
-            self.attention_hidden_size = attention_hidden_size
         self.intermediate_size = intermediate_size
-        self.num_hidden_layers = num_hidden_layers
+        self.num_hidden_blocks = num_hidden_block
+        self.num_layers_per_block = num_layers_per_block
+        self.num_hidden_layers = num_hidden_blocks * num_layers_per_block
         self.num_attention_heads = num_attention_heads
-        if attention_head_dim is None:
-            # self.attention_head_dim = 2 * self.hidden_size // self.num_attention_heads
-            self.attention_head_dim = self.hidden_size // self.num_attention_heads
-        else:
-            self.attention_head_dim = attention_head_dim
         self.max_position_embeddings = max_position_embeddings
         self.attention_dropout = attention_dropout
 
@@ -204,11 +194,6 @@ class GFRConfig(PretrainedConfig):
         self.time_step_floor = time_step_floor
         self.mamba_conv_bias = mamba_conv_bias
         self.mamba_proj_bias = mamba_proj_bias
-
-        if mamba_hidden_size is None:
-            self.mamba_hidden_size = 2 * self.hidden_size # Concatenate
-        else:
-            self.mamba_hidden_size = mamba_hidden_size 
 
         # self.layers_block_type = self._layers_block_type(num_hidden_layers, attn_layer_period, attn_layer_offset)
 

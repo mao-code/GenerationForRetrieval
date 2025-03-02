@@ -54,7 +54,7 @@ from transformers.utils.import_utils import (
     is_causal_conv1d_available,
     is_mamba_ssm_available,
 )
-from .configuration_GFR import GFRConfig
+from GFR.configuration_GFR import GFRConfig
 
 
 if is_mamba_ssm_available():
@@ -243,6 +243,7 @@ class GFRAttention(nn.Module):
     # Conver it to the original dimension
     1. The configuration changed
     2. from self.scaling = (self.head_dim / 2) ** -0.5 to self.scaling = (self.head_dim) ** -0.5
+    
     OLD:
     Adapted from transformers.models.mistral.modeling_mistral.MistralAttention:
     The input dimension here is attention_hidden_size = 2 * hidden_size, and head_dim = attention_hidden_size // num_heads.
@@ -253,23 +254,25 @@ class GFRAttention(nn.Module):
     attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim/2)
     """
 
-    def __init__(self, config: GFRConfig, layer_idx: int):
+    def __init__(self, config: GFRConfig, layer_idx: int, concat_input: Optional[bool] = False):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
 
-        self.attention_hidden_size = config.attention_hidden_size
-        self.head_dim = config.attention_head_dim
+        self.attention_hidden_size = config.hidden_size * (2 if concat_input else 1)
+        self.head_dim = (2 if concat_input else 1) * self.hidden_size // self.num_attention_heads
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.max_position_embeddings = config.max_position_embeddings
-        self.scaling = (self.head_dim) ** -0.5
+        self.scaling = (self.head_dim / (2 if concat_input else 1)) ** -0.5
         self.is_causal = True
         self.attention_dropout = config.attention_dropout
 
-        self.q_proj = nn.Linear(config.attention_hidden_size, config.num_attention_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(config.attention_hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(config.attention_hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
+        self.q_proj = nn.Linear(self.attention_hidden_size, config.num_attention_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(self.attention_hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(self.attention_hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
+
+        # For residual, we need to project the output with the same size as the input
+        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, self.attention_hidden_size, bias=False)
 
     def forward(
         self,
@@ -341,7 +344,6 @@ class GFRMambaMixer(nn.Module):
         self.config = config
         self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
-        self.mamba_hidden_size = config.mamba_hidden_size
 
         self.ssm_state_size = config.mamba_d_state
         self.conv_kernel_size = config.mamba_d_conv
@@ -371,6 +373,7 @@ class GFRMambaMixer(nn.Module):
         # Determine the number of input channels depending on whether we concatenate.
         in_features = config.hidden_size * (2 if self.concat_input else 1)
         # Projection of the input hidden states
+        # From (batch_size, seq_length, in_features) to (batch_size, seq_length, intermediate_size * 2)
         self.in_proj = nn.Linear(in_features, self.intermediate_size * 2, bias=self.use_bias)
 
         # projection of the input hidden states
@@ -400,7 +403,10 @@ class GFRMambaMixer(nn.Module):
         A = A.expand(self.intermediate_size, -1).contiguous()
         self.A_log = nn.Parameter(torch.log(A).reshape(self.n_mamba_heads, self.mamba_head_dim, -1))
         self.D = nn.Parameter(torch.ones(self.n_mamba_heads, self.mamba_head_dim))
-        self.out_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=self.use_bias)
+
+        # If concatenate input, we need to project the input to the correct size (the same size of the input).
+        output_hidden_size = self.hidden_size * (2 if self.concat_input else 1)
+        self.out_proj = nn.Linear(self.intermediate_size, output_hidden_size, bias=self.use_bias)
 
         if not is_fast_path_available:
             logger.warning_once(
@@ -415,7 +421,8 @@ class GFRMambaMixer(nn.Module):
         batch_size, seq_len, _ = hidden_states.shape
         use_precomputed_states = cache_params is not None and cache_params.has_previous_state and seq_len == 1
 
-        # 1. Gated linear projection
+        # 1. Gated linear projection (2 gates here, so 2*intermidiate_size)
+        # Swaps dimensions 1 and 2
         projected_states = self.in_proj(hidden_states).transpose(1, 2)
 
         hidden_states, gate = projected_states.view(batch_size, -1, 2, seq_len).chunk(2, dim=2)
@@ -613,13 +620,15 @@ class GFRMambaMixer(nn.Module):
 
 # Copied from transformers.models.mistral.modeling_mistral.MistralMLP with Mistral->GFR
 class GFRMLP(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: GFRConfig, concat_input: Optional[bool] = False):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
+        self.in_size = self.hidden_size * (2 if concat_input else 1)
         self.intermediate_size = config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+
+        self.gate_proj = nn.Linear(self.in_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.in_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
@@ -627,22 +636,22 @@ class GFRMLP(nn.Module):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj
 
-# ================================UPDATE CODE BELOW================================
 # Transformer Block
 class GFRAttentionDecoderLayer(nn.Module):
-    def __init__(self, config: GFRConfig, layer_idx: Optional[int] = None):
+    def __init__(self, config: GFRConfig, layer_idx: Optional[int] = None, concat_input: Optional[bool] = False):
         super().__init__()
-        self.self_attn = GFRAttention(config, layer_idx)
-
-        self.feed_forward = GFRMLP(config)
-        self.input_layernorm = GFRRMSNorm(config.attention_hidden_size, eps=config.rms_norm_eps)
-        self.pre_ff_layernorm = GFRRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.self_attn = GFRAttention(config, layer_idx, concat_input)
+        norm_hidden_size = config.hidden_size * (2 if concat_input else 1)
+        
+        self.feed_forward = GFRMLP(config, concat_input=concat_input)
+        self.input_layernorm = GFRRMSNorm(norm_hidden_size, eps=config.rms_norm_eps)
+        self.pre_ff_layernorm = GFRRMSNorm(norm_hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
         hidden_states: torch.Tensor,
-        original_hidden_states: torch.Tensor,
         layer_idx: int,
+        original_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[GFRHybridDynamicCache] = None,
         output_attentions: Optional[bool] = False,
@@ -669,7 +678,9 @@ class GFRAttentionDecoderLayer(nn.Module):
             cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
                 Indices depicting the position of the input sequence tokens in the sequence.
         """        
-        # attention
+        if original_hidden_states is not None:
+            hidden_states = torch.concatenate([hidden_states, original_hidden_states], dim=-1)
+
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
@@ -703,15 +714,14 @@ class GFRAttentionDecoderLayer(nn.Module):
 
 # Mamba Block
 class GFRMambaDecoderLayer(nn.Module):
-    def __init__(self, config: GFRConfig, layer_idx: int):
+    def __init__(self, config: GFRConfig, layer_idx: int, concat_input: Optional[bool] = False):
         super().__init__()
-        self.mamba = GFRMambaMixer(config=config, layer_idx=layer_idx)
-        # self.input_layernorm = GFRRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.input_layernorm = GFRRMSNorm(config.mamba_hidden_size, eps=config.rms_norm_eps)
+        self.mamba = GFRMambaMixer(config=config, layer_idx=layer_idx, concat_input=concat_input)
+        norm_hidden_size = config.hidden_size * (2 if concat_input else 1)
+        self.input_layernorm = GFRRMSNorm(norm_hidden_size, eps=config.rms_norm_eps)
         self.layer_idx = layer_idx
-
-        self.feed_forward = GFRMLP(config)
-        self.pre_ff_layernorm = GFRRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.feed_forward = GFRMLP(config, concat_input=concat_input)
+        self.pre_ff_layernorm = GFRRMSNorm(norm_hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -754,7 +764,7 @@ class GFRMambaDecoderLayer(nn.Module):
             hidden_states=hidden_states,
             cache_params=past_key_value,
             attention_mask=attention_mask,
-        )
+        ) # Back to hidden_size
         self_attn_weights = None
 
         # residual connection after mamba
@@ -780,59 +790,49 @@ class GFRMambaDecoderLayer(nn.Module):
 class GFRBlock(nn.Module):
     def __init__(self, config: GFRConfig, block_idx: int = 0):
         super().__init__()
-        # First TransformerBlock
-        self.transformer1 = GFRAttentionDecoderLayer(config, layer_idx=block_idx)
+        self.num_layers_per_block = config.num_layers_per_block 
+
+        self.transformer1 = GFRAttentionDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block)
+        # self.linear1 = nn.Linear(config.hidden_size, config.hidden_size)
+
         # Three MambaBlocks applied after concatenating
-        self.mamba1 = GFRMambaDecoderLayer(config, layer_idx=block_idx)
-        self.mamba2 = GFRMambaDecoderLayer(config, layer_idx=block_idx)
-        self.mamba3 = GFRMambaDecoderLayer(config, layer_idx=block_idx)
-        # Linear layer to map from 2*hidden_size back to hidden_size
-        self.linear1 = nn.Linear(config.hidden_size * 2, config.hidden_size)
+        self.mamba1 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+1)
+        self.mamba2 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+2)
+        self.mamba3 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+3)
+
         # Second TransformerBlock
-        self.transformer2 = GFRAttentionDecoderLayer(config, layer_idx=block_idx)
+        self.transformer2 = GFRAttentionDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+4, concat_input=True)
+        # self.linear2 = nn.Linear(config.hidden_size, config.hidden_size)
+
         # Three MambaBlocks applied after second concatenation
-        self.mamba4 = GFRMambaDecoderLayer(config, layer_idx=block_idx)
-        self.mamba5 = GFRMambaDecoderLayer(config, layer_idx=block_idx)
-        self.mamba6 = GFRMambaDecoderLayer(config, layer_idx=block_idx)
-        # Second linear layer to map back to hidden_size
-        self.linear2 = nn.Linear(config.hidden_size * 2, config.hidden_size)
+        self.mamba4 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+5)
+        self.mamba5 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+6)
+        self.mamba6 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+7)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        # Step 1: Input X.
-        # Step 2: T1 = TransformerBlock(X)
-        T1_tuple = self.transformer1(X, original_hidden_states=X, layer_idx=0)
+        T1_tuple = self.transformer1(X, layer_idx=0)
         T1 = T1_tuple[0]
-        # Step 3: X2 = concat(T1, X)
-        X2 = torch.cat([T1, X], dim=-1)
-        # Steps 4-6: Three MambaBlocks in sequence on the concatenated tensor.
-        X3_tuple = self.mamba1(X2, original_hidden_states=None, layer_idx=0)
-        X3 = X3_tuple[0]
-        X4_tuple = self.mamba2(X3, original_hidden_states=None, layer_idx=0)
-        X4 = X4_tuple[0]
-        X5_tuple = self.mamba3(X4, original_hidden_states=None, layer_idx=0)
-        X5 = X5_tuple[0]
-        # Step 7: X6 = Linear(X5)
-        X6 = self.linear1(X5)
-        # Step 8: X7 = X6 + T1
-        X7 = X6 + T1
-        # Step 9: T2 = TransformerBlock(X7)
-        T2_tuple = self.transformer2(X7, original_hidden_states=X7, layer_idx=0)
-        T2 = T2_tuple[0]
-        # Step 10: X8 = concat(T2, X)
-        X8 = torch.cat([T2, X], dim=-1)
-        # Steps 11-13: Three MambaBlocks in sequence.
-        X9_tuple = self.mamba4(X8, original_hidden_states=None, layer_idx=0)
-        X9 = X9_tuple[0]
-        X10_tuple = self.mamba5(X9, original_hidden_states=None, layer_idx=0)
-        X10 = X10_tuple[0]
-        X11_tuple = self.mamba6(X10, original_hidden_states=None, layer_idx=0)
-        X11 = X11_tuple[0]
-        # Step 14: X12 = Linear(X11)
-        X12 = self.linear2(X11)
-        # Step 15: X13 = X12 + T2
-        X13 = X12 + T2
 
-        return X13
+        X3_tuple = self.mamba1(T1, layer_idx=0)
+        X3 = X3_tuple[0]
+        X4_tuple = self.mamba2(X3, layer_idx=0)
+        X4 = X4_tuple[0]
+        X5_tuple = self.mamba3(X4, layer_idx=0)
+        X5 = X5_tuple[0]
+
+        X6 = X5 + T1
+
+        T2_tuple = self.transformer2(X6, original_hidden_states=X, layer_idx=0)
+        T2 = T2_tuple[0]
+
+        X8_tuple = self.mamba4(T2, layer_idx=0)
+        X8 = X8_tuple[0]
+        X9_tuple = self.mamba5(X8, layer_idx=0)
+        X9 = X9_tuple[0]
+        X10_tuple = self.mamba6(X9, layer_idx=0)
+        X10 = X10_tuple[0]
+
+        return X10
 
 GFR_START_DOCSTRING = r"""
     This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
@@ -1524,7 +1524,7 @@ class GFRModel(GFRPreTrainedModel):
         self.token_type_embeddings = nn.Embedding(2, config.hidden_size)
 
         # Stack N GFRBlocks
-        self.blocks = nn.ModuleList([GFRBlock(config, block_idx=i) for i in range(config.num_hidden_layers)])
+        self.blocks = nn.ModuleList([GFRBlock(config, block_idx=i) for i in range(config.num_hidden_blocks)])
         self.final_layernorm = GFRRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         # Final scoring head: map hidden state to a single scalar.
         self.score_head = nn.Linear(config.hidden_size, 1)
@@ -1609,7 +1609,7 @@ class GFRModel(GFRPreTrainedModel):
         # Encode document and query without adding special tokens
         doc_ids = tokenizer.encode(document, add_special_tokens=False)
         query_ids = tokenizer.encode(query, add_special_tokens=False)
-        
+
         # Build the input sequence: [CLS] + doc_ids + [SEP] + query_ids
         input_ids = [tokenizer.cls_token_id] + doc_ids + [tokenizer.sep_token_id] + query_ids
 
