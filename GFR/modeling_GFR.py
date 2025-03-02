@@ -650,12 +650,13 @@ class GFRAttentionDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        layer_idx: int,
         original_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        causal_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[GFRHybridDynamicCache] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
@@ -678,7 +679,7 @@ class GFRAttentionDecoderLayer(nn.Module):
             cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
                 Indices depicting the position of the input sequence tokens in the sequence.
         """        
-        if original_hidden_states is not None:
+        if self.concat_input and original_hidden_states is not None:
             hidden_states = torch.concatenate([hidden_states, original_hidden_states], dim=-1)
 
         residual = hidden_states
@@ -686,7 +687,7 @@ class GFRAttentionDecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
-            layer_idx=layer_idx,
+            layer_idx=self.layer_idx,
             attention_mask=attention_mask,
             past_key_value=past_key_value,
             output_attentions=output_attentions,
@@ -727,14 +728,12 @@ class GFRMambaDecoderLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         original_hidden_states: Optional[torch.Tensor] = None,
-        layer_idx: int = None,
         attention_mask: Optional[torch.Tensor] = None,
         causal_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[GFRHybridDynamicCache] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
-        transformer_hidden_states: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
@@ -752,7 +751,7 @@ class GFRMambaDecoderLayer(nn.Module):
             cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
                 Indices depicting the position of the input sequence tokens in the sequence.
         """
-        if original_hidden_states is not None:
+        if self.concat_input and original_hidden_states is not None:
             hidden_states = torch.concatenate([hidden_states, original_hidden_states], dim=-1)
 
         # Mamba
@@ -787,6 +786,7 @@ class GFRMambaDecoderLayer(nn.Module):
 
         return outputs
 
+# Overall Block (Not used)
 class GFRBlock(nn.Module):
     def __init__(self, config: GFRConfig, block_idx: int = 0):
         super().__init__()
@@ -809,27 +809,103 @@ class GFRBlock(nn.Module):
         self.mamba5 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+6)
         self.mamba6 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+7)
 
-    def forward(self, X: torch.Tensor) -> torch.Tensor:
-        T1_tuple = self.transformer1(X, layer_idx=0)
+        self.block_idx = block_idx
+
+    def forward(
+        self, 
+        X: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        past_key_value: Optional[GFRHybridDynamicCache] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs
+    ) -> torch.Tensor:
+        T1_tuple = self.transformer1(
+            X, 
+            attention_mask=attention_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            **kwargs,
+        )
         T1 = T1_tuple[0]
 
-        X3_tuple = self.mamba1(T1, layer_idx=0)
+        X3_tuple = self.mamba1(
+            T1,
+            attention_mask=attention_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs,
+        )
         X3 = X3_tuple[0]
-        X4_tuple = self.mamba2(X3, layer_idx=0)
+        X4_tuple = self.mamba2(
+            X3, 
+            attention_mask=attention_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs,
+        )
         X4 = X4_tuple[0]
-        X5_tuple = self.mamba3(X4, layer_idx=0)
+        X5_tuple = self.mamba3(
+            X4,
+            attention_mask=attention_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs,
+        )
         X5 = X5_tuple[0]
 
         X6 = X5 + T1
 
-        T2_tuple = self.transformer2(X6, original_hidden_states=X, layer_idx=0)
+        T2_tuple = self.transformer2(
+            X6, 
+            original_hidden_states=X,
+            original_hidden_states=X,
+            layer_idx=0,
+            attention_mask=attention_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            **kwargs,
+        )
         T2 = T2_tuple[0]
 
-        X8_tuple = self.mamba4(T2, layer_idx=0)
+        X8_tuple = self.mamba4(
+            T2, 
+            attention_mask=attention_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs,
+        )
         X8 = X8_tuple[0]
-        X9_tuple = self.mamba5(X8, layer_idx=0)
+        X9_tuple = self.mamba5(
+            X8,
+            attention_mask=attention_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs,
+        )
         X9 = X9_tuple[0]
-        X10_tuple = self.mamba6(X9, layer_idx=0)
+        X10_tuple = self.mamba6(
+            X9,
+            attention_mask=attention_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs,
+        )
         X10 = X10_tuple[0]
 
         return X10
@@ -1204,393 +1280,402 @@ GFR_INPUTS_DOCSTRING = r"""
 
 #         return causal_mask
 
-# Adapted from transformers.models.jamba.modeling_jamba.JambaForCausalLM with Jamba->GFR, JAMBA->GFR
-class GFRForCausalLM(GFRPreTrainedModel, GenerationMixin):
-    def __init__(self, config: GFRConfig):
-        super().__init__(config)
-        self.model = GFRModel(config)
-        self._tied_weights_keys = ["lm_head.weight", *self.model._tied_weights_keys]
-        self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-
-        # Initialize weights and apply final processing
-        self.post_init()
-
-    def get_input_embeddings(self):
-        return self.model.embed_tokens
-
-    def set_input_embeddings(self, value):
-        self.model.embed_tokens = value
-
-    def get_output_embeddings(self):
-        return self.lm_head
-
-    def set_output_embeddings(self, new_embeddings):
-        self.lm_head = new_embeddings
-
-    def set_decoder(self, decoder):
-        self.model = decoder
-
-    def get_decoder(self):
-        return self.model
-
-    @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-    @add_start_docstrings_to_model_forward(GFR_INPUTS_DOCSTRING)
-    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
-    def forward(
-        self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[GFRHybridDynamicCache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        logits_to_keep: Union[int, torch.Tensor] = 0,
-        **loss_kwargs,
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
-        r"""
-            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-
-            logits_to_keep (`int` or `torch.Tensor`, *optional*):
-                If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
-                `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
-                token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
-                If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
-                This is useful when using packed tensor format (single dimension for batch and sequence length).
-
-        Returns:
-
-        Example:
-
-        ```python
-        >>> from transformers import AutoTokenizer, GFRForCausalLM
-
-        >>> model = GFRForCausalLM.from_pretrained("Zyphra/GFR-7B-v1")
-        >>> tokenizer = AutoTokenizer.from_pretrained("Zyphra/GFR-7B-v1")
-
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-        ```"""
-
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            cache_position=cache_position,
-            return_dict=return_dict,
-        )
-
-        hidden_states = outputs[0]
-        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
-
-        loss = None
-        if labels is not None:
-            loss = self.loss_function(logits, labels, self.vocab_size, **loss_kwargs)
-
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
-
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
-
-    def prepare_inputs_for_generation(
-        self,
-        input_ids,
-        past_key_values=None,
-        attention_mask=None,
-        inputs_embeds=None,
-        cache_position=None,
-        position_ids=None,
-        use_cache=True,
-        **kwargs,
-    ):
-        # Overwitten -- has a unique cache type, `GFRHybridDynamicCache`
-
-        empty_past_kv = past_key_values is None
-
-        # Omit tokens covered by past_key_values
-        if not empty_past_kv:
-            # If we have cache: let's slice `input_ids` through `cache_position`, to keep only the unprocessed tokens
-            # Exception 1: when passing input_embeds, input_ids may be missing entries
-            # Exception 2: some generation methods do special slicing of input_ids, so we don't need to do it here
-            # Exception 3: with synced GPUs cache_position may go out of bounds, but we only want dummy token in that case.
-            #              (we can't check exception 3 while compiling)
-            if (
-                inputs_embeds is not None  # Exception 1
-                or (is_torchdynamo_compiling() or cache_position[-1] >= input_ids.shape[1])  # Exception 3
-            ):
-                input_ids = input_ids[:, -cache_position.shape[0] :]
-            elif input_ids.shape[1] != cache_position.shape[0]:  # Default case (the "else", a no op, is Exception 2)
-                input_ids = input_ids[:, cache_position]
-        else:
-            past_key_values = GFRHybridDynamicCache(
-                self.config, input_ids.shape[0], dtype=self.dtype, device=self.device
-            )
-
-        if attention_mask is not None and position_ids is None:
-            # create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
-            if not empty_past_kv:
-                position_ids = position_ids[:, -input_ids.shape[1] :]
-
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and empty_past_kv:
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids.contiguous()}  # `contiguous()` needed for compilation use cases
-
-        model_inputs.update(
-            {
-                "position_ids": position_ids,
-                "past_key_values": past_key_values,
-                "use_cache": use_cache,
-                "attention_mask": attention_mask,
-                "logits_to_keep": self.config.num_logits_to_keep,
-                "cache_position": cache_position,
-            }
-        )
-        return model_inputs
-
-@add_start_docstrings(
-    """
-    The GFR Model with a sequence classification head on top (linear layer).
-
-    [`GFRForSequenceClassification`] uses the last token in order to do the classification, as other causal models
-    (e.g. GPT-2) do.
-
-    Since it does classification on the last token, it requires to know the position of the last token. If a
-    `pad_token_id` is defined in the configuration, it finds the last token that is not a padding token in each row. If
-    no `pad_token_id` is defined, it simply takes the last value in each row of the batch. Since it cannot guess the
-    padding tokens when `inputs_embeds` are passed instead of `input_ids`, it does the same (take the last value in
-    each row of the batch).
-    """,
-    GFR_START_DOCSTRING,
-)
-class GFRForSequenceClassification(GFRPreTrainedModel):
-    def __init__(self, config):
-        super().__init__(config)
-        self.num_labels = config.num_labels
-        self.model = GFRModel(config)
-        self._tied_weights_keys = self.model._tied_weights_keys
-        self.score = nn.Linear(config.hidden_size, self.num_labels, bias=False)
-
-        # Initialize weights and apply final processing
-        self.post_init()
-
-    def get_input_embeddings(self):
-        return self.model.embed_tokens
-
-    def set_input_embeddings(self, value):
-        self.model.embed_tokens = value
-
-    @add_start_docstrings_to_model_forward(GFR_INPUTS_DOCSTRING)
-    def forward(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-    ) -> Union[Tuple, SequenceClassifierOutputWithPast]:
-        r"""
-        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
-            Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
-            config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
-            `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
-        """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        transformer_outputs = self.model(
-            input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-        hidden_states = transformer_outputs[0]
-        logits = self.score(hidden_states)
-
-        if input_ids is not None:
-            batch_size = input_ids.shape[0]
-        else:
-            batch_size = inputs_embeds.shape[0]
-
-        if self.config.pad_token_id is None and batch_size != 1:
-            raise ValueError("Cannot handle batch sizes > 1 if no padding token is defined.")
-        if self.config.pad_token_id is None:
-            last_non_pad_token = -1
-        elif input_ids is not None:
-            # To handle both left- and right- padding, we take the rightmost token that is not equal to pad_token_id
-            non_pad_mask = (input_ids != self.config.pad_token_id).to(logits.device, torch.int32)
-            token_indices = torch.arange(input_ids.shape[-1], device=logits.device)
-            last_non_pad_token = (token_indices * non_pad_mask).argmax(-1)
-        else:
-            last_non_pad_token = -1
-            logger.warning_once(
-                f"{self.__class__.__name__} will not detect padding tokens in `inputs_embeds`. Results may be "
-                "unexpected if using padding tokens in conjunction with `inputs_embeds.`"
-            )
-
-        pooled_logits = logits[torch.arange(batch_size, device=logits.device), last_non_pad_token]
-
-        loss = None
-        if labels is not None:
-            labels = labels.to(logits.device)
-            if self.config.problem_type is None:
-                if self.num_labels == 1:
-                    self.config.problem_type = "regression"
-                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
-                    self.config.problem_type = "single_label_classification"
-                else:
-                    self.config.problem_type = "multi_label_classification"
-
-            if self.config.problem_type == "regression":
-                loss_fct = MSELoss()
-                if self.num_labels == 1:
-                    loss = loss_fct(pooled_logits.squeeze(), labels.squeeze())
-                else:
-                    loss = loss_fct(pooled_logits, labels)
-            elif self.config.problem_type == "single_label_classification":
-                loss_fct = CrossEntropyLoss()
-                loss = loss_fct(pooled_logits.view(-1, self.num_labels), labels.view(-1))
-            elif self.config.problem_type == "multi_label_classification":
-                loss_fct = BCEWithLogitsLoss()
-                loss = loss_fct(pooled_logits, labels)
-        if not return_dict:
-            output = (pooled_logits,) + transformer_outputs[1:]
-            return ((loss,) + output) if loss is not None else output
-
-        return SequenceClassifierOutputWithPast(
-            loss=loss,
-            logits=pooled_logits,
-            past_key_values=transformer_outputs.past_key_values,
-            hidden_states=transformer_outputs.hidden_states,
-            attentions=transformer_outputs.attentions,
-        )
-
 class GFRModel(GFRPreTrainedModel):
-    def __init__(self, config: GFRConfig):
+    """
+    A "layer-by-layer" variant of your original GFRModel. 
+
+    Instead of creating full blocks via GFRBlock, we explicitly create each sub-layer in sequence:
+      - Transformer 1 (T1)
+      - Mamba 1 (M1)
+      - Mamba 2 (M2)
+      - Mamba 3 (M3)
+         - After M3, add skip connection from T1 output
+      - Transformer 2 (T2, concat_input=True)
+      - Mamba 4 (M4)
+      - Mamba 5 (M5)
+      - Mamba 6 (M6)
+
+    Each "block" of 8 sub-layers is repeated `config.num_hidden_blocks` times, if you so desire.
+    """
+    def __init__(self, config: "GFRConfig"):
         super().__init__(config)
+        self.config = config
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        # Word embedding layers.
+        # Embeddings
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        # Token type (segment) embeddings: 2 segments (e.g., segment 0 for [CLS]+document+[SEP], segment 1 for query).
+        # An example segment (token type) embedding, if desired
         self.token_type_embeddings = nn.Embedding(2, config.hidden_size)
 
-        # Stack N GFRBlocks
-        self.blocks = nn.ModuleList([GFRBlock(config, block_idx=i) for i in range(config.num_hidden_blocks)])
+        # We will create each block as 8 layers in a single list,
+        # since your GFRBlock is effectively T1 -> M1 -> M2 -> M3 -> (skip T1) -> T2 -> M4 -> M5 -> M6.
+        self.layers = nn.ModuleList()
+        # If each block has 8 layers, do repeated blocks if config.num_hidden_blocks > 1
+        # (the original GFRBlock code does exactly 8 sub-layers per block).
+        self.num_hidden_blocks = config.num_hidden_blocks
+        self.num_layers_per_block = config.num_layers_per_block
+        self.num_hidden_layers = config.num_hidden_layers
+        for block_idx in range(self.num_hidden_blocks):
+            base_idx = block_idx * self.num_layers_per_block
+            # 1) Transformer block T1 (no concatenation)
+            self.layers.append(
+                GFRAttentionDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 0,
+                    concat_input=False
+                )
+            )
+            # 2) Mamba 1
+            self.layers.append(
+                GFRMambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 1,
+                    concat_input=False
+                )
+            )
+            # 3) Mamba 2
+            self.layers.append(
+                GFRMambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 2,
+                    concat_input=False
+                )
+            )
+            # 4) Mamba 3
+            self.layers.append(
+                GFRMambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 3,
+                    concat_input=False
+                )
+            )
+            # 5) Transformer block T2 (concat_input=True)
+            self.layers.append(
+                GFRAttentionDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 4,
+                    concat_input=True
+                )
+            )
+            # 6) Mamba 4
+            self.layers.append(
+                GFRMambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 5,
+                    concat_input=False
+                )
+            )
+            # 7) Mamba 5
+            self.layers.append(
+                GFRMambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 6,
+                    concat_input=False
+                )
+            )
+            # 8) Mamba 6
+            self.layers.append(
+                GFRMambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 7,
+                    concat_input=False
+                )
+            )
+
+        # Final RMSNorm
         self.final_layernorm = GFRRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        # Final scoring head: map hidden state to a single scalar.
+
+        # Scoring head: from [CLS] hidden state -> scalar
         self.score_head = nn.Linear(config.hidden_size, 1)
+
+        # Some needed flags
         self.gradient_checkpointing = False
         self.post_init()
 
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, new_embeddings):
+        self.embed_tokens = new_embeddings
+
+    @add_start_docstrings_to_model_forward("GFR Model forward", "GFR_INPUTS_DOCSTRING")
     def forward(
         self,
         input_ids: torch.LongTensor = None,
         token_type_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[GFRHybridDynamicCache] = None,
+        past_key_values: Optional["GFRHybridDynamicCache"] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-    ):
+        **kwargs,
+    ) -> Union[Tuple, BaseModelOutputWithPast]:
         """
         Input Format:
-        The input sequence is now expected as [[CLS], d1, d2, ..., dM, [SEP], q1, q2, ..., qN]. With this format, the [CLS] token is the first token.
-
-        Token Type Embeddings:
-        The model adds a token type embedding to each token. This allows the model to distinguish between the document and query portions. You can assign, for example, token type 0 for the [CLS] token, document tokens, and the [SEP] token, and token type 1 for the query tokens. This setup is controlled via the token_type_ids input.
-
-        Pooling:
-        Since [CLS] is the first token, the pooled representation is obtained from hidden_states[:, 0, :] and used to compute the relevance score via a linear layer followed by a sigmoid activation.
+        [CLS], d1, d2, ..., dM, [SEP], q1, q2, ..., qN
+        The [CLS] is in position 0, which we eventually use for the final pooled representation.
         """
+        # Handle default Booleans
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # Require exactly one of input_ids or inputs_embeds.
-        if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError("You must specify either input_ids or inputs_embeds, not both.")
+        # If gradient checkpointing is enabled, we cannot use cache
+        if self.gradient_checkpointing and self.training and use_cache:
+            logger.warning_once(
+                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
+            )
+            use_cache = False
 
-        # Get input embeddings.
+        # Exactly one of {input_ids, inputs_embeds} must be specified
+        if (input_ids is None) == (inputs_embeds is None):
+            raise ValueError(
+                "You must specify either input_ids or inputs_embeds (but not both)."
+            )
+
+        # Embed the inputs
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
-        
-        # If token_type_ids not provided, default to zeros.
-        if token_type_ids is None:
-            token_type_ids = torch.zeros_like(input_ids)
+            inputs_embeds = self.embed_tokens(input_ids)  # (batch, seq_len, hidden_size)
 
-        # Obtain token type embeddings.
-        token_type_embeds = self.token_type_embeddings(token_type_ids)
-        # Sum token and token type embeddings.
-        inputs_embeds = inputs_embeds + token_type_embeds
+        # If token_type_ids is missing, default it to zeros
+        if token_type_ids is None and input_ids is not None:
+            token_type_ids = torch.zeros_like(input_ids)  # same shape as input_ids
 
-        # (Optionally, you can add position embeddings here if needed.)
+        # Token-type embeddings
+        token_type_embeds = self.token_type_embeddings(token_type_ids)  # shape: (batch, seq_len, hidden_size)
 
-        hidden_states = inputs_embeds
+        # Sum embeddings
+        hidden_states = inputs_embeds + token_type_embeds
+        original_hidden_states = hidden_states.clone()
 
-        # Pass through each GFRBlock.
-        for block in self.blocks:
-            hidden_states = block(hidden_states)
+        # Possibly handle positions & caching
+        batch_size, seq_len, _ = hidden_states.shape
+        if cache_position is None:
+            cache_position = torch.arange(seq_len, device=hidden_states.device)
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
+
+        if use_cache and past_key_values is None:
+            logger.warning_once(
+                "GFR requires an initialized `GFRHybridDynamicCache` to return a cache. None was provided."
+            )
+
+        # Build or update your causal mask as needed
+        causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position)
+
+        # Prepare outputs
+        all_hidden_states = () if output_hidden_states else None
+        all_attentions = () if output_attentions else None
+
+        layer_index = 0  # index in self.layers
+        for block_idx in range(self.num_hidden_blocks):
+            # block_input = hidden_states  # save the block input for T2's concatenation
+
+            # ----- 1) Transformer T1 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            if self.gradient_checkpointing and self.training:
+                layer_outputs = torch.utils.checkpoint.checkpoint(
+                    self.layers[layer_idx].__call__,
+                    hidden_states,
+                    original_hidden_states,
+                    attention_mask,
+                    causal_mask,
+                    past_key_values,
+                    output_attentions,
+                    use_cache,
+                    cache_position
+                )
+            else:
+                layer_outputs = self.layers[layer_idx](
+                    hidden_states,
+                    original_hidden_states=original_hidden_states,
+                    attention_mask=attention_mask,
+                    causal_mask=causal_mask,
+                    past_key_value=past_key_values,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    **kwargs,
+                )
+
+            T1_out = layer_outputs[0]
+            # collect attention if not None
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+            hidden_states = T1_out
+
+            # ----- 2) Mamba 1 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+
+            # ----- 3) Mamba 2 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+
+            # ----- 4) Mamba 3 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+
+            # After M3, we do the skip connection for the next mamba block
+            mamba3_output_hidden_states = hidden_states
+
+            # ----- 5) Transformer T2 (concat_input=True) -----
+            # This sub-layer must receive `original_hidden_states` to do the concatenation
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+
+            # After M3, we do the skip connection for the next mamba block
+            hidden_states = hidden_states + mamba3_output_hidden_states
+            # ----- 6) Mamba 4 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+
+            # ----- 7) Mamba 5 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+
+            # ----- 8) Mamba 6 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
 
         hidden_states = self.final_layernorm(hidden_states)
-        # Now, the input is: [CLS], d1, d2, ..., dM, [SEP], q1, q2, ..., qN.
-        # Use the first token ([CLS]) as the pooled representation.
+
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        # Mark the cache as having been used once
+        if past_key_values is not None and not past_key_values.has_previous_state:
+            past_key_values.has_previous_state = True
+
+        # Use [CLS] (the first token) as the "pooled" representation
         cls_token = hidden_states[:, 0, :]  # shape: (batch, hidden_size)
-        score = torch.sigmoid(self.score_head(cls_token))  # scalar relevance score per example
+        score = torch.sigmoid(self.score_head(cls_token))  # final scalar per example
 
-        return score
-    
-    import torch
-
+        if not return_dict:
+            # If you just want the score, or (score, past_key_values) if use_cache
+            return (score, past_key_values) if use_cache else (score,)
+        else:
+            # Return a huggingface-style output struct
+            return BaseModelOutputWithPast(
+                last_hidden_state=hidden_states,
+                past_key_values=past_key_values if use_cache else None,
+                hidden_states=all_hidden_states,
+                attentions=all_attentions,
+            )
+        
     def prepare_input(self, document: str, query: str, tokenizer, max_length: int = 512):
         """
         Prepares the input for the GFRModel.
@@ -1629,6 +1714,41 @@ class GFRModel(GFRPreTrainedModel):
         token_type_ids_tensor = torch.tensor([token_type_ids], dtype=torch.long)
         
         return input_ids_tensor, token_type_ids_tensor
+    
+    # Copied from transformers.models.jamba.modeling_jamba.JambaModel._update_causal_mask
+    def _update_causal_mask(self, attention_mask, input_tensor, cache_position):
+        if self.config._attn_implementation == "flash_attention_2":
+            if attention_mask is not None and 0.0 in attention_mask:
+                return attention_mask
+            return None
 
+        dtype, device = input_tensor.dtype, input_tensor.device
+        min_dtype = torch.finfo(dtype).min
+        sequence_length = input_tensor.shape[1]
+        target_length = cache_position[-1] + 1
+
+        causal_mask = torch.full((sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device)
+        if sequence_length != 1:
+            causal_mask = torch.triu(causal_mask, diagonal=1)
+        causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
+        causal_mask = causal_mask[None, None, :, :].expand(input_tensor.shape[0], 1, -1, -1)
+        if attention_mask is not None:
+            causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
+            if attention_mask.dim() == 2:
+                mask_length = attention_mask.shape[-1]
+                padding_mask = causal_mask[..., :mask_length].eq(0.0) * attention_mask[:, None, None, :].eq(0.0)
+                causal_mask[..., :mask_length] = causal_mask[..., :mask_length].masked_fill(padding_mask, min_dtype)
+
+        if (
+            self.config._attn_implementation == "sdpa"
+            and attention_mask is not None
+            and attention_mask.device.type in ["cuda", "xpu"]
+        ):
+            # Attend to all tokens in fully masked rows in the causal_mask, for example the relevant first rows when
+            # using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path.
+            # Details: https://github.com/pytorch/pytorch/issues/110213
+            causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
+
+        return causal_mask
 
 __all__ = ["GFRForCausalLM", "GFRForSequenceClassification", "GFRModel", "GFRPreTrainedModel"]
