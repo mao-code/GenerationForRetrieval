@@ -260,7 +260,7 @@ class GFRAttention(nn.Module):
         self.layer_idx = layer_idx
 
         self.attention_hidden_size = config.hidden_size * (2 if concat_input else 1)
-        self.head_dim = (2 if concat_input else 1) * self.hidden_size // self.num_attention_heads
+        self.head_dim = (2 if concat_input else 1) * config.hidden_size // config.num_attention_heads
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.max_position_embeddings = config.max_position_embeddings
         self.scaling = (self.head_dim / (2 if concat_input else 1)) ** -0.5
@@ -623,12 +623,11 @@ class GFRMLP(nn.Module):
     def __init__(self, config: GFRConfig, concat_input: Optional[bool] = False):
         super().__init__()
         self.config = config
-        self.hidden_size = config.hidden_size
-        self.in_size = self.hidden_size * (2 if concat_input else 1)
+        self.hidden_size = config.hidden_size * (2 if concat_input else 1)
         self.intermediate_size = config.intermediate_size
 
-        self.gate_proj = nn.Linear(self.in_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.in_size, self.intermediate_size, bias=False)
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
@@ -646,6 +645,9 @@ class GFRAttentionDecoderLayer(nn.Module):
         self.feed_forward = GFRMLP(config, concat_input=concat_input)
         self.input_layernorm = GFRRMSNorm(norm_hidden_size, eps=config.rms_norm_eps)
         self.pre_ff_layernorm = GFRRMSNorm(norm_hidden_size, eps=config.rms_norm_eps)
+
+        self.layer_idx = layer_idx
+        self.concat_input = concat_input
 
     def forward(
         self,
@@ -700,7 +702,6 @@ class GFRAttentionDecoderLayer(nn.Module):
 
         # feed-forward (MLP)
         residual = hidden_states
-
         hidden_states = self.pre_ff_layernorm(hidden_states)
         hidden_states = self.feed_forward(hidden_states)
 
@@ -720,9 +721,12 @@ class GFRMambaDecoderLayer(nn.Module):
         self.mamba = GFRMambaMixer(config=config, layer_idx=layer_idx, concat_input=concat_input)
         norm_hidden_size = config.hidden_size * (2 if concat_input else 1)
         self.input_layernorm = GFRRMSNorm(norm_hidden_size, eps=config.rms_norm_eps)
-        self.layer_idx = layer_idx
-        self.feed_forward = GFRMLP(config, concat_input=concat_input)
+
         self.pre_ff_layernorm = GFRRMSNorm(norm_hidden_size, eps=config.rms_norm_eps)
+        self.feed_forward = GFRMLP(config, concat_input=concat_input)
+
+        self.layer_idx = layer_idx
+        self.concat_input = concat_input
 
     def forward(
         self,
@@ -787,128 +791,127 @@ class GFRMambaDecoderLayer(nn.Module):
         return outputs
 
 # Overall Block (Not used)
-class GFRBlock(nn.Module):
-    def __init__(self, config: GFRConfig, block_idx: int = 0):
-        super().__init__()
-        self.num_layers_per_block = config.num_layers_per_block 
+# class GFRBlock(nn.Module):
+#     def __init__(self, config: GFRConfig, block_idx: int = 0):
+#         super().__init__()
+#         self.num_layers_per_block = config.num_layers_per_block 
 
-        self.transformer1 = GFRAttentionDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block)
-        # self.linear1 = nn.Linear(config.hidden_size, config.hidden_size)
+#         self.transformer1 = GFRAttentionDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block)
+#         # self.linear1 = nn.Linear(config.hidden_size, config.hidden_size)
 
-        # Three MambaBlocks applied after concatenating
-        self.mamba1 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+1)
-        self.mamba2 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+2)
-        self.mamba3 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+3)
+#         # Three MambaBlocks applied after concatenating
+#         self.mamba1 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+1)
+#         self.mamba2 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+2)
+#         self.mamba3 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+3)
 
-        # Second TransformerBlock
-        self.transformer2 = GFRAttentionDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+4, concat_input=True)
-        # self.linear2 = nn.Linear(config.hidden_size, config.hidden_size)
+#         # Second TransformerBlock
+#         self.transformer2 = GFRAttentionDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+4, concat_input=True)
+#         # self.linear2 = nn.Linear(config.hidden_size, config.hidden_size)
 
-        # Three MambaBlocks applied after second concatenation
-        self.mamba4 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+5)
-        self.mamba5 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+6)
-        self.mamba6 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+7)
+#         # Three MambaBlocks applied after second concatenation
+#         self.mamba4 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+5)
+#         self.mamba5 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+6)
+#         self.mamba6 = GFRMambaDecoderLayer(config, layer_idx=block_idx*self.num_layers_per_block+7)
 
-        self.block_idx = block_idx
+#         self.block_idx = block_idx
 
-    def forward(
-        self, 
-        X: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        past_key_value: Optional[GFRHybridDynamicCache] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        **kwargs
-    ) -> torch.Tensor:
-        T1_tuple = self.transformer1(
-            X, 
-            attention_mask=attention_mask,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            **kwargs,
-        )
-        T1 = T1_tuple[0]
+#     def forward(
+#         self, 
+#         X: torch.Tensor,
+#         attention_mask: Optional[torch.Tensor] = None,
+#         past_key_value: Optional[GFRHybridDynamicCache] = None,
+#         output_attentions: Optional[bool] = False,
+#         use_cache: Optional[bool] = False,
+#         cache_position: Optional[torch.LongTensor] = None,
+#         **kwargs
+#     ) -> torch.Tensor:
+#         T1_tuple = self.transformer1(
+#             X, 
+#             attention_mask=attention_mask,
+#             past_key_value=past_key_value,
+#             output_attentions=output_attentions,
+#             use_cache=use_cache,
+#             **kwargs,
+#         )
+#         T1 = T1_tuple[0]
 
-        X3_tuple = self.mamba1(
-            T1,
-            attention_mask=attention_mask,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            **kwargs,
-        )
-        X3 = X3_tuple[0]
-        X4_tuple = self.mamba2(
-            X3, 
-            attention_mask=attention_mask,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            **kwargs,
-        )
-        X4 = X4_tuple[0]
-        X5_tuple = self.mamba3(
-            X4,
-            attention_mask=attention_mask,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            **kwargs,
-        )
-        X5 = X5_tuple[0]
+#         X3_tuple = self.mamba1(
+#             T1,
+#             attention_mask=attention_mask,
+#             past_key_value=past_key_value,
+#             output_attentions=output_attentions,
+#             use_cache=use_cache,
+#             cache_position=cache_position,
+#             **kwargs,
+#         )
+#         X3 = X3_tuple[0]
+#         X4_tuple = self.mamba2(
+#             X3, 
+#             attention_mask=attention_mask,
+#             past_key_value=past_key_value,
+#             output_attentions=output_attentions,
+#             use_cache=use_cache,
+#             cache_position=cache_position,
+#             **kwargs,
+#         )
+#         X4 = X4_tuple[0]
+#         X5_tuple = self.mamba3(
+#             X4,
+#             attention_mask=attention_mask,
+#             past_key_value=past_key_value,
+#             output_attentions=output_attentions,
+#             use_cache=use_cache,
+#             cache_position=cache_position,
+#             **kwargs,
+#         )
+#         X5 = X5_tuple[0]
 
-        X6 = X5 + T1
+#         X6 = X5 + T1
 
-        T2_tuple = self.transformer2(
-            X6, 
-            original_hidden_states=X,
-            original_hidden_states=X,
-            layer_idx=0,
-            attention_mask=attention_mask,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            **kwargs,
-        )
-        T2 = T2_tuple[0]
+#         T2_tuple = self.transformer2(
+#             X6, 
+#             original_hidden_states=X,
+#             layer_idx=0,
+#             attention_mask=attention_mask,
+#             past_key_value=past_key_value,
+#             output_attentions=output_attentions,
+#             use_cache=use_cache,
+#             **kwargs,
+#         )
+#         T2 = T2_tuple[0]
 
-        X8_tuple = self.mamba4(
-            T2, 
-            attention_mask=attention_mask,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            **kwargs,
-        )
-        X8 = X8_tuple[0]
-        X9_tuple = self.mamba5(
-            X8,
-            attention_mask=attention_mask,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            **kwargs,
-        )
-        X9 = X9_tuple[0]
-        X10_tuple = self.mamba6(
-            X9,
-            attention_mask=attention_mask,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            **kwargs,
-        )
-        X10 = X10_tuple[0]
+#         X8_tuple = self.mamba4(
+#             T2, 
+#             attention_mask=attention_mask,
+#             past_key_value=past_key_value,
+#             output_attentions=output_attentions,
+#             use_cache=use_cache,
+#             cache_position=cache_position,
+#             **kwargs,
+#         )
+#         X8 = X8_tuple[0]
+#         X9_tuple = self.mamba5(
+#             X8,
+#             attention_mask=attention_mask,
+#             past_key_value=past_key_value,
+#             output_attentions=output_attentions,
+#             use_cache=use_cache,
+#             cache_position=cache_position,
+#             **kwargs,
+#         )
+#         X9 = X9_tuple[0]
+#         X10_tuple = self.mamba6(
+#             X9,
+#             attention_mask=attention_mask,
+#             past_key_value=past_key_value,
+#             output_attentions=output_attentions,
+#             use_cache=use_cache,
+#             cache_position=cache_position,
+#             **kwargs,
+#         )
+#         X10 = X10_tuple[0]
 
-        return X10
+#         return X10
 
 GFR_START_DOCSTRING = r"""
     This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
@@ -1358,6 +1361,13 @@ class GFRModel(GFRPreTrainedModel):
                     concat_input=True
                 )
             )
+            self.layers.append(
+                nn.Linear(
+                    2 * config.hidden_size, 
+                    config.hidden_size, 
+                    bias=True
+                )
+            )
             # 6) Mamba 4
             self.layers.append(
                 GFRMambaDecoderLayer(
@@ -1456,6 +1466,7 @@ class GFRModel(GFRPreTrainedModel):
 
         # Possibly handle positions & caching
         batch_size, seq_len, _ = hidden_states.shape
+        print( f"batch_size: {batch_size}, seq_len: {seq_len}" )
         if cache_position is None:
             cache_position = torch.arange(seq_len, device=hidden_states.device)
         if position_ids is None:
@@ -1482,7 +1493,7 @@ class GFRModel(GFRPreTrainedModel):
                 all_hidden_states += (hidden_states,)
             if self.gradient_checkpointing and self.training:
                 layer_outputs = torch.utils.checkpoint.checkpoint(
-                    self.layers[layer_idx].__call__,
+                    self.layers[layer_index].__call__,
                     hidden_states,
                     original_hidden_states,
                     attention_mask,
@@ -1493,7 +1504,7 @@ class GFRModel(GFRPreTrainedModel):
                     cache_position
                 )
             else:
-                layer_outputs = self.layers[layer_idx](
+                layer_outputs = self.layers[layer_index](
                     hidden_states,
                     original_hidden_states=original_hidden_states,
                     attention_mask=attention_mask,
@@ -1592,6 +1603,13 @@ class GFRModel(GFRPreTrainedModel):
                 all_attentions += (layer_outputs[1],)
             layer_index += 1
 
+            # Linear Projection
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](hidden_states)
+            hidden_states = layer_outputs
+            layer_index += 1
+
             # After M3, we do the skip connection for the next mamba block
             hidden_states = hidden_states + mamba3_output_hidden_states
             # ----- 6) Mamba 4 -----
@@ -1669,7 +1687,7 @@ class GFRModel(GFRPreTrainedModel):
             return (score, past_key_values) if use_cache else (score,)
         else:
             # Return a huggingface-style output struct
-            return BaseModelOutputWithPast(
+            return score, BaseModelOutputWithPast(
                 last_hidden_state=hidden_states,
                 past_key_values=past_key_values if use_cache else None,
                 hidden_states=all_hidden_states,

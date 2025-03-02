@@ -23,6 +23,8 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+from torchinfo import summary
+
 def main():
     logging.info("Initializing GFR model for inference...")
     # Use the tokenizer from Zamba (did not have CLS and SEP token ids)
@@ -41,6 +43,15 @@ def main():
     # Instantiate the model.
     model = GFRModel(config)
     model.to('cuda')
+    
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"Number of parameters: {num_params}")
+
+    summary(
+        model,
+        input_size=(1, 32),  
+        dtypes=[torch.long],
+    )
     logging.info("Model initialized successfully.")
 
     # Example document and query.
@@ -58,7 +69,7 @@ def main():
     model.eval()
     with torch.no_grad():
         # Forward pass through the model to get the relevance score.
-        relevance_score = model(input_ids=input_ids, token_type_ids=token_type_ids)
+        relevance_score, model_output = model(input_ids=input_ids, token_type_ids=token_type_ids, return_dict=True)
         print("Predicted relevance score:", relevance_score.item())
 
 if __name__ == '__main__':

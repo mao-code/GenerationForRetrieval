@@ -164,7 +164,7 @@ class GFRConfig(PretrainedConfig):
         self.tie_word_embeddings = tie_word_embeddings
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
-        self.num_hidden_blocks = num_hidden_block
+        self.num_hidden_blocks = num_hidden_blocks
         self.num_layers_per_block = num_layers_per_block
         self.num_hidden_layers = num_hidden_blocks * num_layers_per_block
         self.num_attention_heads = num_attention_heads
