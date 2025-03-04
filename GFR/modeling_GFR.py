@@ -1356,7 +1356,7 @@ class GFRModel(GFRPreTrainedModel):
                 attentions=all_attentions,
             )
         
-    def prepare_input(document: str, query: str, tokenizer, max_length: int = 2048):
+    def prepare_input(self, document: str, query: str, tokenizer, max_length: int = 2048):
         """
         Prepares the input for the model by truncating only the document tokens if needed.
 
