@@ -91,6 +91,9 @@ def main():
     logging.info(f"Total validation samples: {len(validation_samples)}")
     logging.info(f"Total test samples: {len(test_samples)}")
 
+    checkpoint_dir = "checkpoints"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
     # Training loop.
     for epoch in range(args.epochs):
         logging.info(f"Starting epoch {epoch+1}")
@@ -103,14 +106,28 @@ def main():
         logging.info(f"Epoch {epoch+1} validation metrics: {val_metrics}")
         wandb.log({f"epoch_{epoch+1}_validation": val_metrics})
 
+        # Save checkpoint at the end of each epoch (only on main process if distributed)
+        if not args.distributed or local_rank == 0:
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': epoch_loss,
+            }
+            
+            checkpoint_filename = f"GFRModel_{run_name}_epoch_{epoch+1:02d}.pth"
+            checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
+            torch.save(checkpoint, checkpoint_path)
+            wandb.save(checkpoint_path)
+            logging.info(f"Checkpoint saved at {checkpoint_path}")
+
     # Evaluate on test data after training.
     test_metrics = evaluate(model, test_samples, tokenizer, device, args.eval_batch_size)
     logging.info(f"Test metrics: {test_metrics}")
     wandb.log({"test_metrics": test_metrics})
 
     # Save the final model checkpoint.
-    checkpoint_path = os.path.join("checkpoints", "gfr_model_final.pth")
-    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+    checkpoint_path = os.path.join(checkpoint_dir, f"GFRModel_{run_name}_epoch_{args.epochs:02d}.pth")
     torch.save(model.state_dict(), checkpoint_path)
     wandb.save(checkpoint_path)
     logging.info("Training completed and model checkpoint saved.")
