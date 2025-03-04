@@ -1464,7 +1464,7 @@ class GFRModel(GFRPreTrainedModel):
 
         # Possibly handle positions & caching
         batch_size, seq_len, _ = hidden_states.shape
-        print( f"batch_size: {batch_size}, seq_len: {seq_len}" )
+        # print( f"batch_size: {batch_size}, seq_len: {seq_len}" )
         if cache_position is None:
             cache_position = torch.arange(seq_len, device=hidden_states.device)
         if position_ids is None:

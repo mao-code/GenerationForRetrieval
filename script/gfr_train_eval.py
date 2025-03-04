@@ -21,6 +21,7 @@ from beir.datasets.data_loader import GenericDataLoader
 
 # For training and evaluation functions
 from utils import load_dataset, prepare_training_samples, train_one_epoch, evaluate
+from datetime import datetime
 
 def main():
     parser = argparse.ArgumentParser()
@@ -29,8 +30,9 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
     parser.add_argument("--distributed", action="store_true", help="Enable distributed training.")
     parser.add_argument("--eval_batch_size", type=int, default=16, help="Number of samples for evaluation metrics.")
+    # New argument: list of datasets to use for training
     parser.add_argument("--datasets", type=str, nargs='+', default=["msmarco", "hotpotqa"],
-        help="List of training datasets to use (e.g., msmarco hotpotqa nq).")
+                        help="List of training datasets to use (e.g., msmarco hotpotqa nq).")
     args = parser.parse_args()
 
     # Set up device and distributed training if enabled.
@@ -43,6 +45,7 @@ def main():
         logging.info(f"Distributed training enabled. Local rank: {local_rank}")
 
     # Initialize WandB for logging.
+    wandb.init(project="GFR_Document_Ranking", config=vars(args))
     wandb.login(key="your_api_key_here")
     wandb.init(project="GFR_Document_Ranking", entity="your_account_name", config=vars(args))
 
@@ -64,12 +67,10 @@ def main():
         model = nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
 
     # Set up the loss function.
-    # We choose MarginRankingLoss because it directly optimizes the margin between positive and negative scores,
-    # which is well-suited for ranking tasks.
     loss_fn = nn.MarginRankingLoss(margin=1.0)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
-    # Load and combine datasets (MS MARCO and HotpotQA) for training, validation, and testing.
+    # Load and combine datasets for training, validation, and testing.
     training_samples = []
     validation_samples = []
     test_samples = []
@@ -93,7 +94,7 @@ def main():
     # Training loop.
     for epoch in range(args.epochs):
         logging.info(f"Starting epoch {epoch+1}")
-        epoch_loss = train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, args.batch_size)
+        epoch_loss = train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, args.batch_size, epoch)
         logging.info(f"Epoch {epoch+1} training loss: {epoch_loss:.4f}")
         wandb.log({"epoch": epoch+1, "training_loss": epoch_loss})
 
@@ -116,3 +117,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    """
+    python -m script.gfr_train_eval \
+        --epochs 3 \
+        --batch_size 8 \
+        --lr 1e-4 \
+        --eval_batch_size 16 \
+        --datasets msmarco hotpotqa
+    """

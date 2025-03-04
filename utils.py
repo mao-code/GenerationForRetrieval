@@ -11,6 +11,11 @@ import torch
 from beir import util
 from beir.datasets.data_loader import GenericDataLoader
 
+# For progress bar
+from tqdm import tqdm
+
+import wandb
+
 # Setup logging format.
 logging.basicConfig(
     format="%(asctime)s - %(message)s",
@@ -62,21 +67,26 @@ def prepare_training_samples(corpus: dict, queries: dict, qrels: dict):
             training_samples.append((query_text, pos_doc_text, neg_doc_text))
     return training_samples
 
-def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, batch_size):
+def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, batch_size, epoch):
     """
-    Training loop over the training samples. For each sample we compute scores for a positive
-    and a negative pair. The MarginRankingLoss enforces that the positive score exceeds the negative
-    score by at least a margin.
+    Training loop over the training samples.
+    Uses a progress bar to display batch loss and percentage complete.
+    Logs detailed progress on-screen and to WandB.
     """
     model.train()
     total_loss = 0.0
     random.shuffle(training_samples)
     num_batches = len(training_samples) // batch_size + int(len(training_samples) % batch_size > 0)
     
-    for i in range(0, len(training_samples), batch_size):
-        batch = training_samples[i:i+batch_size]
+    # Set up tqdm progress bar.
+    pbar = tqdm(range(num_batches), desc=f"Epoch {epoch+1}", unit="batch")
+    
+    for batch_idx in range(num_batches):
+        start_idx = batch_idx * batch_size
+        batch = training_samples[start_idx : start_idx + batch_size]
         optimizer.zero_grad()
         losses = []
+        
         for query, pos_doc, neg_doc in batch:
             # Prepare inputs for positive and negative pairs.
             input_ids_pos, token_type_ids_pos = model.prepare_input(pos_doc, query, tokenizer, max_length=512)
@@ -90,9 +100,9 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
             score_pos, _ = model(input_ids=input_ids_pos, token_type_ids=token_type_ids_pos, return_dict=True)
             score_neg, _ = model(input_ids=input_ids_neg, token_type_ids=token_type_ids_neg, return_dict=True)
             
-            # MarginRankingLoss expects: loss = max(0, margin - (s_pos - s_neg)).
+            # MarginRankingLoss: loss = max(0, margin - (s_pos - s_neg)).
             target = torch.ones(score_pos.size()).to(device)
-            loss = loss_fn(score_pos.view(-1), score_neg.view(-1), target)
+            loss = loss_fn(score_pos.view(-1), score_neg.view(-1), target.view(-1))
             losses.append(loss)
         
         if losses:
@@ -100,17 +110,32 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
             batch_loss.backward()
             optimizer.step()
             total_loss += batch_loss.item()
+            
+            # Log to WandB.
+            wandb.log({
+                "iteration_loss": batch_loss.item(),
+                "epoch": epoch+1,
+                "batch": batch_idx+1,
+                "percent_complete": 100.0 * (batch_idx+1) / num_batches
+            })
+            
+            # Update progress bar with current loss.
+            pbar.set_postfix(loss=f"{batch_loss.item():.4f}")
+            pbar.update(1)
+            
+            # Also log on-screen every 10 batches.
+            if (batch_idx + 1) % 10 == 0 or batch_idx + 1 == num_batches:
+                logging.info(f"Epoch {epoch+1}, Batch {batch_idx+1}/{num_batches}, Loss: {batch_loss.item():.4f}, Complete: {100.0 * (batch_idx+1) / num_batches:.2f}%")
     
+    pbar.close()
     avg_loss = total_loss / num_batches
     return avg_loss
 
 def evaluate(model, samples, tokenizer, device, eval_batch_size):
     """
     Evaluate ranking quality on a small set of evaluation samples.
-    For each sample, we compute the scores for the positive and negative documents,
-    then compute simple metrics (NDCG, MRR, Precision, Recall) assuming that the positive
-    document should be ranked first.
-    We also measure the average inference time per sample and estimate throughput.
+    Uses a progress bar to display evaluation progress.
+    Logs detailed evaluation progress to WandB and the console.
     """
     model.eval()
     ndcg_list = []
@@ -118,10 +143,12 @@ def evaluate(model, samples, tokenizer, device, eval_batch_size):
     precision_list = []
     recall_list = []
     inference_times = []
-    eval_count = 0
-
-    # Evaluate on a limited number of samples (controlled by eval_batch_size).
-    for query, pos_doc, neg_doc in samples:
+    
+    pbar = tqdm(total=eval_batch_size, desc="Evaluating", unit="sample")
+    
+    for idx, (query, pos_doc, neg_doc) in enumerate(samples):
+        if idx >= eval_batch_size:
+            break
         start_time = time.time()
         input_ids_pos, token_type_ids_pos = model.prepare_input(pos_doc, query, tokenizer, max_length=512)
         input_ids_neg, token_type_ids_neg = model.prepare_input(neg_doc, query, tokenizer, max_length=512)
@@ -139,7 +166,7 @@ def evaluate(model, samples, tokenizer, device, eval_batch_size):
         scores = [score_pos.item(), score_neg.item()]
         sorted_idx = np.argsort(scores)[::-1]  # descending order
         
-        # If the positive document (index 0) is ranked first, metrics are 1, otherwise 0.
+        # Assume the positive document should rank first.
         ndcg = 1.0 if sorted_idx[0] == 0 else 0.0
         mrr = 1.0 if sorted_idx[0] == 0 else 0.0
         precision = 1.0 if sorted_idx[0] == 0 else 0.0
@@ -150,10 +177,20 @@ def evaluate(model, samples, tokenizer, device, eval_batch_size):
         precision_list.append(precision)
         recall_list.append(recall)
         
-        eval_count += 1
-        if eval_count >= eval_batch_size:
-            break
-
+        wandb.log({
+            "eval_sample": idx+1,
+            "ndcg": ndcg,
+            "mrr": mrr,
+            "precision": precision,
+            "recall": recall,
+            "inference_time": inference_time
+        })
+        
+        pbar.update(1)
+        if (idx + 1) % 5 == 0 or idx + 1 == eval_batch_size:
+            logging.info(f"Evaluated {idx+1}/{eval_batch_size} samples")
+    
+    pbar.close()
     avg_ndcg = np.mean(ndcg_list)
     avg_mrr = np.mean(mrr_list)
     avg_precision = np.mean(precision_list)
