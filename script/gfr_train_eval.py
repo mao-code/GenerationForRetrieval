@@ -46,7 +46,6 @@ def main():
 
     # Initialize WandB for logging.
     run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    wandb.init(project="GFR_Document_Ranking", config=vars(args))
     wandb.login(key="your_api_key_here")
     wandb.init(project="GFR_Document_Ranking", entity="your_account_name", name=run_name, config=vars(args))
 
