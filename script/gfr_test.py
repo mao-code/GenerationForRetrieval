@@ -1,14 +1,3 @@
-# Example usage for inference:
-
-# Assume you have a pretrained tokenizer that provides these attributes/methods.
-# For example, using Hugging Face's BertTokenizer:
-#
-#   from transformers import BertTokenizer
-#   tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-#
-# And your model is an instance of GFRModel.
-import argparse
-
 import torch
 from GFR.configuration_GFR import GFRConfig
 from GFR.modeling_GFR import GFRModel

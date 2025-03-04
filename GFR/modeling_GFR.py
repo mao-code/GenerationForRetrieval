@@ -208,7 +208,6 @@ class GFRHybridDynamicCache(DynamicCache):
     def from_legacy_cache(cls, past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None) -> "DynamicCache":
         raise NotImplementedError("GFRHybridDynamicCache does not have a legacy cache equivalent.")
 
-
 def eager_attention_forward(
     module: nn.Module,
     query: torch.Tensor,
@@ -233,7 +232,6 @@ def eager_attention_forward(
     attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output, attn_weights
-
 
 class GFRAttention(nn.Module):
     """
