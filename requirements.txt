@@ -5,3 +5,4 @@ causal-conv1d # find your causal-conv1d version wheel here: https://github.com/D
 mamba-ssm
 
 torchinfo
+wandb

@@ -22,10 +22,18 @@ def load_dataset(dataset: str, split: str):
     """
     Download and load a dataset (msmarco or hotpotqa) using BEIR's GenericDataLoader.
     """
-    url = f"https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{dataset}.zip"
+
     out_dir = os.path.join(pathlib.Path(__file__).parent.absolute(), "datasets")
-    data_path = util.download_and_unzip(url, out_dir)
+    data_path = os.path.join(out_dir, dataset)
+    if not os.path.exists(data_path):
+        print(f"Dataset '{dataset}' not found locally. Downloading...")
+        url = f"https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{dataset}.zip"
+        data_path = util.download_and_unzip(url, out_dir)
+    else:
+        print(f"Dataset '{dataset}' found locally. Skipping download.")
+
     corpus, queries, qrels = GenericDataLoader(data_folder=data_path).load(split=split)
+    
     return corpus, queries, qrels
 
 def prepare_training_samples(corpus: dict, queries: dict, qrels: dict):

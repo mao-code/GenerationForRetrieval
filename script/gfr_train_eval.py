@@ -43,7 +43,8 @@ def main():
         logging.info(f"Distributed training enabled. Local rank: {local_rank}")
 
     # Initialize WandB for logging.
-    wandb.init(project="GFR_Document_Ranking", config=vars(args))
+    wandb.login(key="your_api_key_here")
+    wandb.init(project="GFR_Document_Ranking", entity="your_account_name", config=vars(args))
 
     # Load the BERT tokenizer.
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
