@@ -89,8 +89,8 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
         
         for query, pos_doc, neg_doc in batch:
             # Prepare inputs for positive and negative pairs.
-            input_ids_pos, token_type_ids_pos = model.prepare_input(pos_doc, query, tokenizer, max_length=512)
-            input_ids_neg, token_type_ids_neg = model.prepare_input(neg_doc, query, tokenizer, max_length=512)
+            input_ids_pos, token_type_ids_pos = model.prepare_input(pos_doc, query, tokenizer)
+            input_ids_neg, token_type_ids_neg = model.prepare_input(neg_doc, query, tokenizer)
             input_ids_pos = input_ids_pos.to(device)
             token_type_ids_pos = token_type_ids_pos.to(device)
             input_ids_neg = input_ids_neg.to(device)
@@ -123,8 +123,8 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
             pbar.set_postfix(loss=f"{batch_loss.item():.4f}")
             pbar.update(1)
             
-            # Also log on-screen every 10 batches.
-            if (batch_idx + 1) % 10 == 0 or batch_idx + 1 == num_batches:
+            # Also log on-screen every 100 batches.
+            if (batch_idx + 1) % 100 == 0 or batch_idx + 1 == num_batches:
                 logging.info(f"Epoch {epoch+1}, Batch {batch_idx+1}/{num_batches}, Loss: {batch_loss.item():.4f}, Complete: {100.0 * (batch_idx+1) / num_batches:.2f}%")
     
     pbar.close()
@@ -150,8 +150,8 @@ def evaluate(model, samples, tokenizer, device, eval_batch_size):
         if idx >= eval_batch_size:
             break
         start_time = time.time()
-        input_ids_pos, token_type_ids_pos = model.prepare_input(pos_doc, query, tokenizer, max_length=512)
-        input_ids_neg, token_type_ids_neg = model.prepare_input(neg_doc, query, tokenizer, max_length=512)
+        input_ids_pos, token_type_ids_pos = model.prepare_input(pos_doc, query, tokenizer)
+        input_ids_neg, token_type_ids_neg = model.prepare_input(neg_doc, query, tokenizer)
         input_ids_pos = input_ids_pos.to(device)
         token_type_ids_pos = token_type_ids_pos.to(device)
         input_ids_neg = input_ids_neg.to(device)
