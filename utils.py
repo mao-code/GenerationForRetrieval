@@ -10,6 +10,7 @@ import torch
 # BEIR API imports.
 from beir import util
 from beir.datasets.data_loader import GenericDataLoader
+from beir.retrieval.custom_metrics import hole, mrr, recall_cap, top_k_accuracy
 
 # For progress bar
 from tqdm import tqdm
@@ -176,6 +177,30 @@ def beir_evaluate(qrels: dict, results: dict, k_values: list, ignore_identical_i
         precision[f"P@{k}"] = round(precision[f"P@{k}"] / num_queries, 5)
     return ndcg, _map, recall, precision
 
+def beir_evaluate_custom(
+        qrels: dict[str, dict[str, int]],
+        results: dict[str, dict[str, float]],
+        k_values: list[int],
+        metric: str,
+    ) -> tuple[dict[str, float]]:
+        if metric.lower() in ["mrr", "mrr@k", "mrr_cut"]:
+            return mrr(qrels, results, k_values)
+
+        elif metric.lower() in ["recall_cap", "r_cap", "r_cap@k"]:
+            return recall_cap(qrels, results, k_values)
+
+        elif metric.lower() in ["hole", "hole@k"]:
+            return hole(qrels, results, k_values)
+
+        elif metric.lower() in [
+            "acc",
+            "top_k_acc",
+            "accuracy",
+            "accuracy@k",
+            "top_k_accuracy",
+        ]:
+            return top_k_accuracy(qrels, results, k_values)
+
 def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tokenizer, device, batch_size=32, k_values=[1, 3, 5, 10, 100]):
     """
     Full retrieval evaluation similar to BEIR's implementation.
@@ -213,8 +238,8 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
                 batch_input_ids.append(input_ids)
                 batch_token_type_ids.append(token_type_ids)
             # Stack inputs to create a batch.
-            batch_input_ids = torch.stack(batch_input_ids, dim=0).to(device)
-            batch_token_type_ids = torch.stack(batch_token_type_ids, dim=0).to(device)
+            batch_input_ids = torch.stack(batch_input_ids, dim=0).squeeze(1).to(device) # (batch, seq_len, hidden_size)
+            batch_token_type_ids = torch.stack(batch_token_type_ids, dim=0).squeeze(1).to(device)
 
             start_time = time.time()
             with torch.no_grad():

@@ -1356,7 +1356,7 @@ class GFRModel(GFRPreTrainedModel):
                 attentions=all_attentions,
             )
         
-    def prepare_input(self, document: str, query: str, tokenizer, max_length: int = 2048):
+    def prepare_input(self, document: str, query: str, tokenizer, max_length: int = 512):
         """
         Prepares the input for the model by truncating only the document tokens if needed.
 
@@ -1392,6 +1392,11 @@ class GFRModel(GFRPreTrainedModel):
         # Token type 0 for [CLS], document tokens, and [SEP]; 1 for query tokens.
         doc_part_length = len(truncated_doc_ids) + 2  # account for [CLS] and [SEP]
         token_type_ids = [0] * doc_part_length + [1] * len(query_ids)
+        
+        pad_length = max_length - len(input_ids)  # Calculate how many tokens to pad
+        if pad_length > 0:
+            input_ids += [tokenizer.pad_token_id] * pad_length   # Pad input_ids with pad_token_id
+            token_type_ids += [0] * pad_length   # Pad token_type_ids with 0 (standard approach))
         
         # Convert lists to tensors and add batch dimension.
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)

@@ -126,6 +126,7 @@ def main():
     torch.save(model.state_dict(), checkpoint_path)
     wandb.save(checkpoint_path)
     logging.info("Training completed and model checkpoint saved.")
+    wandb.finish()
 
 if __name__ == "__main__":
     main()
@@ -134,8 +135,8 @@ if __name__ == "__main__":
 Example usage:
 python -m script.gfr_train_eval \
     --epochs 3 \
-    --batch_size 8 \
+    --batch_size 4 \
     --lr 1e-4 \
-    --eval_batch_size 16 \
+    --eval_batch_size 4 \
     --datasets msmarco hotpotqa
 """
