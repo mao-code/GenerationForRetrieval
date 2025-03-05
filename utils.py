@@ -263,13 +263,18 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
 
     # Evaluate retrieval performance using pytrec_eval.
     ndcg, _map, recall, precision = beir_evaluate(qrels, results, k_values, ignore_identical_ids=True)
-    
+    mrr = beir_evaluate_custom(qrels, results, k_values, metric="mrr")
+    top_k_accuracy = beir_evaluate_custom(qrels, results, k_values, metric="top_k_accuracy")
+
     metrics = {
         "NDCG": ndcg,
         "MAP": _map,
         "Recall": recall,
         "Precision": precision,
+        "MRR": mrr,
+        "Top_K_Accuracy": top_k_accuracy,
         "Avg_Inference_Time_ms": avg_inference_time_ms,
         "Throughput_docs_per_sec": throughput_docs_per_sec,
     }
+    
     return metrics
