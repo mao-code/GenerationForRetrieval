@@ -16,6 +16,8 @@ from tqdm import tqdm
 
 import wandb
 
+import pytrec_eval
+
 # Setup logging format.
 logging.basicConfig(
     format="%(asctime)s - %(message)s",
@@ -70,8 +72,6 @@ def prepare_training_samples(corpus: dict, queries: dict, qrels: dict):
 def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, batch_size, epoch):
     """
     Training loop over the training samples.
-    Uses a progress bar to display batch loss and percentage complete.
-    Logs detailed progress on-screen and to WandB.
     """
     model.train()
     total_loss = 0.0
@@ -131,79 +131,120 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
     avg_loss = total_loss / num_batches
     return avg_loss
 
-def evaluate(model, samples, tokenizer, device, eval_batch_size):
+
+def beir_evaluate(qrels: dict, results: dict, k_values: list, ignore_identical_ids: bool = True):
     """
-    Evaluate ranking quality on a small set of evaluation samples.
-    Uses a progress bar to display evaluation progress.
-    Logs detailed evaluation progress to WandB and the console.
+    BEIR-style evaluation using pytrec_eval.
+    The qrels and results should follow BEIR format:
+      - qrels: { query_id: { doc_id: relevance, ... }, ... }
+      - results: { query_id: { doc_id: score, ... }, ... }
+    """
+    if ignore_identical_ids:
+        # Remove cases where query id equals document id.
+        for qid, rels in results.items():
+            for pid in list(rels.keys()):
+                if qid == pid:
+                    results[qid].pop(pid)
+
+    # Initialize metric dictionaries.
+    ndcg = {f"NDCG@{k}": 0.0 for k in k_values}
+    _map = {f"MAP@{k}": 0.0 for k in k_values}
+    recall = {f"Recall@{k}": 0.0 for k in k_values}
+    precision = {f"P@{k}": 0.0 for k in k_values}
+
+    map_string = "map_cut." + ",".join(str(k) for k in k_values)
+    ndcg_string = "ndcg_cut." + ",".join(str(k) for k in k_values)
+    recall_string = "recall." + ",".join(str(k) for k in k_values)
+    precision_string = "P." + ",".join(str(k) for k in k_values)
+    
+    evaluator = pytrec_eval.RelevanceEvaluator(qrels, {map_string, ndcg_string, recall_string, precision_string})
+    scores = evaluator.evaluate(results)
+
+    # Average metrics over all queries.
+    for query_id, query_scores in scores.items():
+        for k in k_values:
+            ndcg[f"NDCG@{k}"] += query_scores[f"ndcg_cut_{k}"]
+            _map[f"MAP@{k}"] += query_scores[f"map_cut_{k}"]
+            recall[f"Recall@{k}"] += query_scores[f"recall_{k}"]
+            precision[f"P@{k}"] += query_scores[f"P_{k}"]
+
+    num_queries = len(scores)
+    for k in k_values:
+        ndcg[f"NDCG@{k}"] = round(ndcg[f"NDCG@{k}"] / num_queries, 5)
+        _map[f"MAP@{k}"] = round(_map[f"MAP@{k}"] / num_queries, 5)
+        recall[f"Recall@{k}"] = round(recall[f"Recall@{k}"] / num_queries, 5)
+        precision[f"P@{k}"] = round(precision[f"P@{k}"] / num_queries, 5)
+    return ndcg, _map, recall, precision
+
+def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tokenizer, device, batch_size=32, k_values=[1, 3, 5, 10, 100]):
+    """
+    Full retrieval evaluation similar to BEIR's implementation.
+    
+    For each query:
+      - Iterate over the entire corpus in batches.
+      - For each document, use model.prepare_input(doc_text, query, tokenizer) to generate inputs.
+      - Compute scores with the model.
+      - Build a results dict in the format: { query_id: { doc_id: score, ... }, ... }
+    
+    Also computes:
+      - Avg_Inference_Time_ms: Average time (in ms) per document.
+      - Throughput_docs_per_sec: Number of documents processed per second.
     """
     model.eval()
-    ndcg_list = []
-    mrr_list = []
-    precision_list = []
-    recall_list = []
-    inference_times = []
-    
-    pbar = tqdm(total=eval_batch_size, desc="Evaluating", unit="sample")
-    
-    for idx, (query, pos_doc, neg_doc) in enumerate(samples):
-        if idx >= eval_batch_size:
-            break
-        start_time = time.time()
-        input_ids_pos, token_type_ids_pos = model.prepare_input(pos_doc, query, tokenizer)
-        input_ids_neg, token_type_ids_neg = model.prepare_input(neg_doc, query, tokenizer)
-        input_ids_pos = input_ids_pos.to(device)
-        token_type_ids_pos = token_type_ids_pos.to(device)
-        input_ids_neg = input_ids_neg.to(device)
-        token_type_ids_neg = token_type_ids_neg.to(device)
-        
-        with torch.no_grad():
-            score_pos, _ = model(input_ids=input_ids_pos, token_type_ids=token_type_ids_pos, return_dict=True)
-            score_neg, _ = model(input_ids=input_ids_neg, token_type_ids=token_type_ids_neg, return_dict=True)
-        inference_time = time.time() - start_time
-        inference_times.append(inference_time)
-        
-        scores = [score_pos.item(), score_neg.item()]
-        sorted_idx = np.argsort(scores)[::-1]  # descending order
-        
-        # Assume the positive document should rank first.
-        ndcg = 1.0 if sorted_idx[0] == 0 else 0.0
-        mrr = 1.0 if sorted_idx[0] == 0 else 0.0
-        precision = 1.0 if sorted_idx[0] == 0 else 0.0
-        recall = 1.0 if sorted_idx[0] == 0 else 0.0
-        
-        ndcg_list.append(ndcg)
-        mrr_list.append(mrr)
-        precision_list.append(precision)
-        recall_list.append(recall)
-        
-        wandb.log({
-            "eval_sample": idx+1,
-            "ndcg": ndcg,
-            "mrr": mrr,
-            "precision": precision,
-            "recall": recall,
-            "inference_time": inference_time
-        })
-        
-        pbar.update(1)
-        if (idx + 1) % 5 == 0 or idx + 1 == eval_batch_size:
-            logging.info(f"Evaluated {idx+1}/{eval_batch_size} samples")
-    
-    pbar.close()
-    avg_ndcg = np.mean(ndcg_list)
-    avg_mrr = np.mean(mrr_list)
-    avg_precision = np.mean(precision_list)
-    avg_recall = np.mean(recall_list)
-    avg_inference_time = np.mean(inference_times)
-    throughput = (2 * eval_batch_size) / sum(inference_times)  # approximate queries per second
+    results = {}  # To store scores: { query_id: { doc_id: score, ... } }
+    total_inference_time = 0.0
+    total_docs_processed = 0
 
+    # Process each query.
+    for query_id, query in tqdm(queries.items(), desc="Evaluating queries"):
+        results[query_id] = {}
+        doc_ids = list(corpus.keys())
+        # Process corpus in batches.
+        for i in range(0, len(doc_ids), batch_size):
+            batch_doc_ids = doc_ids[i:i+batch_size]
+            batch_docs = [corpus[doc_id]['text'] for doc_id in batch_doc_ids]
+
+            # Prepare input tensors for each query-document pair in the batch.
+            batch_input_ids = []
+            batch_token_type_ids = []
+            for doc_text in batch_docs:
+                # The model.prepare_input should create the concatenated input (document, query)
+                input_ids, token_type_ids = model.prepare_input(doc_text, query, tokenizer)
+                batch_input_ids.append(input_ids)
+                batch_token_type_ids.append(token_type_ids)
+            # Stack inputs to create a batch.
+            batch_input_ids = torch.stack(batch_input_ids, dim=0).to(device)
+            batch_token_type_ids = torch.stack(batch_token_type_ids, dim=0).to(device)
+
+            start_time = time.time()
+            with torch.no_grad():
+                scores, _ = model(
+                    input_ids=batch_input_ids,
+                    token_type_ids=batch_token_type_ids,
+                    return_dict=True
+                )
+            elapsed = time.time() - start_time
+            total_inference_time += elapsed
+            total_docs_processed += len(batch_doc_ids)
+
+            # The model returns scores of shape (batch, 1); squeeze them to a list.
+            batch_scores = scores.squeeze(-1).tolist()
+            for j, doc_id in enumerate(batch_doc_ids):
+                results[query_id][doc_id] = batch_scores[j]
+
+    # Compute inference time metrics.
+    avg_inference_time_ms = (total_inference_time / total_docs_processed) * 1000  
+    throughput_docs_per_sec = total_docs_processed / total_inference_time
+
+    # Evaluate retrieval performance using pytrec_eval.
+    ndcg, _map, recall, precision = beir_evaluate(qrels, results, k_values, ignore_identical_ids=True)
+    
     metrics = {
-        "NDCG": avg_ndcg,
-        "MRR": avg_mrr,
-        "Precision": avg_precision,
-        "Recall": avg_recall,
-        "Avg_Inference_Time": avg_inference_time,
-        "Throughput": throughput,
+        "NDCG": ndcg,
+        "MAP": _map,
+        "Recall": recall,
+        "Precision": precision,
+        "Avg_Inference_Time_ms": avg_inference_time_ms,
+        "Throughput_docs_per_sec": throughput_docs_per_sec,
     }
     return metrics

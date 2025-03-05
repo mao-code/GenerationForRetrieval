@@ -143,7 +143,7 @@ class GFRConfig(PretrainedConfig):
         pad_token_id=0,
         bos_token_id=1,
         eos_token_id=2,
-        max_position_embeddings=4096,
+        max_position_embeddings=4096, # never used
         attention_dropout=0.0,
         attn_layer_period=6,
         attn_layer_offset=4,
