@@ -1356,51 +1356,60 @@ class GFRModel(GFRPreTrainedModel):
                 attentions=all_attentions,
             )
         
-    def prepare_input(self, document: str, query: str, tokenizer, max_length: int = 512):
+    def prepare_input(self, documents: list, queries: list, tokenizer, max_length: int = 512):
         """
-        Prepares the input for the model by truncating only the document tokens if needed.
+        Prepares batched inputs for the model by truncating only the document tokens if needed.
 
         Args:
-            document (str): The document text.
-            query (str): The query text.
-            tokenizer: The tokenizer (with attributes: cls_token_id, sep_token_id, and method: encode()).
+            documents (List[str]): List of document texts.
+            queries (List[str]): List of query texts.
+            tokenizer: The tokenizer (must have attributes: cls_token_id, sep_token_id, pad_token_id,
+                    and method: encode()).
             max_length (int): Maximum sequence length (including special tokens).
 
         Returns:
-            input_ids_tensor (torch.LongTensor): Tensor of token IDs with shape (1, seq_length).
-            token_type_ids_tensor (torch.LongTensor): Tensor of token type IDs with shape (1, seq_length).
+            input_ids_tensor (torch.LongTensor): Tensor of token IDs with shape (batch_size, seq_length).
+            token_type_ids_tensor (torch.LongTensor): Tensor of token type IDs with shape (batch_size, seq_length).
         """
-        # Encode document and query without adding special tokens
-        doc_ids = tokenizer.encode(document, add_special_tokens=False)
-        query_ids = tokenizer.encode(query, add_special_tokens=False)
+        input_ids_list = []
+        token_type_ids_list = []
         
-        # Calculate available tokens for the document.
-        # We need to reserve tokens for [CLS] + [SEP] + query_ids.
-        reserved_tokens = 2 + len(query_ids)  # 1 for [CLS] and 1 for [SEP]
-        available_doc_length = max_length - reserved_tokens
+        for document, query in zip(documents, queries):
+            # Encode document and query without adding special tokens.
+            doc_ids = tokenizer.encode(document, add_special_tokens=False)
+            query_ids = tokenizer.encode(query, add_special_tokens=False)
+            
+            # Calculate available tokens for the document.
+            # Reserve tokens for [CLS] and [SEP] plus the query tokens.
+            reserved_tokens = 2 + len(query_ids)  # 1 for [CLS] and 1 for [SEP]
+            available_doc_length = max_length - reserved_tokens
+            
+            if available_doc_length < 0:
+                raise ValueError("max_length is too small to accommodate the query and required special tokens.")
+            
+            # Truncate document tokens if necessary, leaving the query unchanged.
+            truncated_doc_ids = doc_ids[:available_doc_length]
+            
+            # Build the final input sequence: [CLS] + truncated_doc_ids + [SEP] + query_ids.
+            input_ids = [tokenizer.cls_token_id] + truncated_doc_ids + [tokenizer.sep_token_id] + query_ids
+            
+            # Create token type IDs:
+            # Token type 0 for [CLS], document tokens, and [SEP]; 1 for query tokens.
+            doc_part_length = len(truncated_doc_ids) + 2  # account for [CLS] and [SEP]
+            token_type_ids = [0] * doc_part_length + [1] * len(query_ids)
+            
+            # Pad sequence if necessary.
+            pad_length = max_length - len(input_ids)
+            if pad_length > 0:
+                input_ids += [tokenizer.pad_token_id] * pad_length
+                token_type_ids += [0] * pad_length
+            
+            input_ids_list.append(input_ids)
+            token_type_ids_list.append(token_type_ids)
         
-        if available_doc_length < 0:
-            raise ValueError("max_length is too small to accommodate the query and required special tokens.")
-        
-        # Truncate document tokens if necessary, leaving the query unchanged.
-        truncated_doc_ids = doc_ids[:available_doc_length]
-        
-        # Build the final input sequence: [CLS] + truncated_doc_ids + [SEP] + query_ids
-        input_ids = [tokenizer.cls_token_id] + truncated_doc_ids + [tokenizer.sep_token_id] + query_ids
-        
-        # Create token type IDs:
-        # Token type 0 for [CLS], document tokens, and [SEP]; 1 for query tokens.
-        doc_part_length = len(truncated_doc_ids) + 2  # account for [CLS] and [SEP]
-        token_type_ids = [0] * doc_part_length + [1] * len(query_ids)
-        
-        pad_length = max_length - len(input_ids)  # Calculate how many tokens to pad
-        if pad_length > 0:
-            input_ids += [tokenizer.pad_token_id] * pad_length   # Pad input_ids with pad_token_id
-            token_type_ids += [0] * pad_length   # Pad token_type_ids with 0 (standard approach))
-        
-        # Convert lists to tensors and add batch dimension.
-        input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)
-        token_type_ids_tensor = torch.tensor([token_type_ids], dtype=torch.long)
+        # Convert lists to tensors with shape (batch_size, max_length).
+        input_ids_tensor = torch.tensor(input_ids_list, dtype=torch.long)
+        token_type_ids_tensor = torch.tensor(token_type_ids_list, dtype=torch.long)
         
         return input_ids_tensor, token_type_ids_tensor
     

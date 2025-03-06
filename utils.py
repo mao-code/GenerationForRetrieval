@@ -72,7 +72,7 @@ def prepare_training_samples(corpus: dict, queries: dict, qrels: dict):
 
 def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, batch_size, epoch):
     """
-    Training loop over the training samples.
+    Fully vectorized training loop over the training samples.
     """
     model.train()
     total_loss = 0.0
@@ -86,47 +86,53 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
         start_idx = batch_idx * batch_size
         batch = training_samples[start_idx : start_idx + batch_size]
         optimizer.zero_grad()
-        losses = []
         
-        for query, pos_doc, neg_doc in batch:
-            # Prepare inputs for positive and negative pairs.
-            input_ids_pos, token_type_ids_pos = model.prepare_input(pos_doc, query, tokenizer)
-            input_ids_neg, token_type_ids_neg = model.prepare_input(neg_doc, query, tokenizer)
-            input_ids_pos = input_ids_pos.to(device)
-            token_type_ids_pos = token_type_ids_pos.to(device)
-            input_ids_neg = input_ids_neg.to(device)
-            token_type_ids_neg = token_type_ids_neg.to(device)
-            
-            # Forward pass: get relevance scores.
-            score_pos, _ = model(input_ids=input_ids_pos, token_type_ids=token_type_ids_pos, return_dict=True)
-            score_neg, _ = model(input_ids=input_ids_neg, token_type_ids=token_type_ids_neg, return_dict=True)
-            
-            # MarginRankingLoss: loss = max(0, margin - (s_pos - s_neg)).
-            target = torch.ones(score_pos.size()).to(device)
-            loss = loss_fn(score_pos.view(-1), score_neg.view(-1), target.view(-1))
-            losses.append(loss)
+        # Create batched lists for queries, positive and negative documents.
+        batch_queries = [query for query, pos_doc, neg_doc in batch]
+        batch_pos_docs = [pos_doc for query, pos_doc, neg_doc in batch]
+        batch_neg_docs = [neg_doc for query, pos_doc, neg_doc in batch]
         
-        if losses:
-            batch_loss = torch.stack(losses).mean()
-            batch_loss.backward()
-            optimizer.step()
-            total_loss += batch_loss.item()
-            
-            # Log to WandB.
-            wandb.log({
-                "iteration_loss": batch_loss.item(),
-                "epoch": epoch+1,
-                "batch": batch_idx+1,
-                "percent_complete": 100.0 * (batch_idx+1) / num_batches
-            })
-            
-            # Update progress bar with current loss.
-            pbar.set_postfix(loss=f"{batch_loss.item():.4f}")
-            pbar.update(1)
-            
-            # Also log on-screen every 100 batches.
-            if (batch_idx + 1) % 100 == 0 or batch_idx + 1 == num_batches:
-                logging.info(f"Epoch {epoch+1}, Batch {batch_idx+1}/{num_batches}, Loss: {batch_loss.item():.4f}, Complete: {100.0 * (batch_idx+1) / num_batches:.2f}%")
+        # Prepare batched inputs.
+        input_ids_pos, token_type_ids_pos = model.prepare_input(batch_pos_docs, batch_queries, tokenizer)
+        input_ids_neg, token_type_ids_neg = model.prepare_input(batch_neg_docs, batch_queries, tokenizer)
+        
+        # Transfer batched inputs to device.
+        input_ids_pos = input_ids_pos.to(device)
+        token_type_ids_pos = token_type_ids_pos.to(device)
+        input_ids_neg = input_ids_neg.to(device)
+        token_type_ids_neg = token_type_ids_neg.to(device)
+        
+        # Forward pass in batch.
+        score_pos, _ = model(input_ids=input_ids_pos, token_type_ids=token_type_ids_pos, return_dict=True)
+        score_neg, _ = model(input_ids=input_ids_neg, token_type_ids=token_type_ids_neg, return_dict=True)
+        
+        # Create target tensor for MarginRankingLoss.
+        target = torch.ones(score_pos.size(), device=device)
+        loss = loss_fn(score_pos.view(-1), score_neg.view(-1), target.view(-1))
+        
+        # Backward pass and optimizer step.
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+        
+        # Log to WandB.
+        wandb.log({
+            "iteration_loss": loss.item(),
+            "epoch": epoch+1,
+            "batch": batch_idx+1,
+            "percent_complete": 100.0 * (batch_idx+1) / num_batches
+        })
+        
+        # Update progress bar with current loss.
+        pbar.set_postfix(loss=f"{loss.item():.4f}")
+        pbar.update(1)
+        
+        # Also log on-screen every 100 batches.
+        if (batch_idx + 1) % 100 == 0 or batch_idx + 1 == num_batches:
+            logging.info(
+                f"Epoch {epoch+1}, Batch {batch_idx+1}/{num_batches}, Loss: {loss.item():.4f}, "
+                f"Complete: {100.0 * (batch_idx+1) / num_batches:.2f}%"
+            )
     
     pbar.close()
     avg_loss = total_loss / num_batches
@@ -203,12 +209,12 @@ def beir_evaluate_custom(
 
 def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tokenizer, device, batch_size=32, k_values=[1, 3, 5, 10, 100]):
     """
-    Full retrieval evaluation similar to BEIR's implementation.
+    Full retrieval evaluation similar to BEIR's implementation using batched processing.
     
     For each query:
       - Iterate over the entire corpus in batches.
-      - For each document, use model.prepare_input(doc_text, query, tokenizer) to generate inputs.
-      - Compute scores with the model.
+      - For each batch, use model.prepare_input with a list of document texts and a repeated query.
+      - Compute scores with the model in a single forward pass.
       - Build a results dict in the format: { query_id: { doc_id: score, ... }, ... }
     
     Also computes:
@@ -229,17 +235,11 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
             batch_doc_ids = doc_ids[i:i+batch_size]
             batch_docs = [corpus[doc_id]['text'] for doc_id in batch_doc_ids]
 
-            # Prepare input tensors for each query-document pair in the batch.
-            batch_input_ids = []
-            batch_token_type_ids = []
-            for doc_text in batch_docs:
-                # The model.prepare_input should create the concatenated input (document, query)
-                input_ids, token_type_ids = model.prepare_input(doc_text, query, tokenizer)
-                batch_input_ids.append(input_ids)
-                batch_token_type_ids.append(token_type_ids)
-            # Stack inputs to create a batch.
-            batch_input_ids = torch.stack(batch_input_ids, dim=0).squeeze(1).to(device) # (batch, seq_len, hidden_size)
-            batch_token_type_ids = torch.stack(batch_token_type_ids, dim=0).squeeze(1).to(device)
+            # Prepare batched input tensors for the entire batch of documents paired with the query.
+            # The vectorized prepare_input now accepts a list of documents and a list of queries.
+            batch_input_ids, batch_token_type_ids = model.prepare_input(batch_docs, [query] * len(batch_docs), tokenizer)
+            batch_input_ids = batch_input_ids.to(device)
+            batch_token_type_ids = batch_token_type_ids.to(device)
 
             start_time = time.time()
             with torch.no_grad():
@@ -276,5 +276,5 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
         "Avg_Inference_Time_ms": avg_inference_time_ms,
         "Throughput_docs_per_sec": throughput_docs_per_sec,
     }
-    
+
     return metrics

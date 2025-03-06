@@ -49,7 +49,7 @@ def main():
 
     # Prepare the input tensors.
     logging.info("Preparing input tensors...")
-    input_ids, token_type_ids = model.prepare_input(document, query, tokenizer, max_length=512)
+    input_ids, token_type_ids = model.prepare_input([document], [query], tokenizer, max_length=512)
     input_ids = input_ids.to('cuda')
     token_type_ids = token_type_ids.to('cuda')
 
