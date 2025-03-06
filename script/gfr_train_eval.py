@@ -85,7 +85,7 @@ def main():
         logging.info(f"Dataset {dataset} dev queries: {len(dev_data[dataset][1])}")
         logging.info(f"Dataset {dataset} test queries: {len(test_data[dataset][1])}")
 
-    checkpoint_dir = "checkpoints"
+    checkpoint_dir = "checkpoint"
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Training loop.
@@ -124,7 +124,7 @@ def main():
     # Save the final model checkpoint.
     checkpoint_path = os.path.join(checkpoint_dir, f"GFRModel_{run_name}_epoch_{args.epochs:02d}.pth")
     torch.save(model.state_dict(), checkpoint_path)
-    wandb.save(checkpoint_path)
+    # wandb.save(checkpoint_path)
     logging.info("Training completed and model checkpoint saved.")
     wandb.finish()
 
@@ -133,6 +133,10 @@ if __name__ == "__main__":
 
 """
 Example usage:
+
+Distributed:
+python -m torch.distributed.run --nproc_per_node=<NUM_GPUS> -m script.gfr_train_eval --distributed --epochs 3 --batch_size 16 --lr 1e-4 --eval_batch_size 8 --datasets msmarco hotpotqa
+
 python -m script.gfr_train_eval \
     --epochs 3 \
     --batch_size 4 \
