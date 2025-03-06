@@ -112,7 +112,7 @@ def main():
             checkpoint_filename = f"GFRModel_{run_name}_epoch_{epoch+1:02d}.pth"
             checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
             torch.save(checkpoint, checkpoint_path)
-            wandb.save(checkpoint_path)
+            # wandb.save(checkpoint_path)
             logging.info(f"Checkpoint saved at {checkpoint_path}")
 
     # Evaluate on test data for each dataset after training.

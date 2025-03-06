@@ -74,6 +74,8 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
     """
     Fully vectorized training loop over the training samples.
     """
+    base_model = model.module if hasattr(model, "module") else model
+
     model.train()
     total_loss = 0.0
     random.shuffle(training_samples)
@@ -93,8 +95,8 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
         batch_neg_docs = [neg_doc for query, pos_doc, neg_doc in batch]
         
         # Prepare batched inputs.
-        input_ids_pos, token_type_ids_pos = model.prepare_input(batch_pos_docs, batch_queries, tokenizer)
-        input_ids_neg, token_type_ids_neg = model.prepare_input(batch_neg_docs, batch_queries, tokenizer)
+        input_ids_pos, token_type_ids_pos = base_model.prepare_input(batch_pos_docs, batch_queries, tokenizer)
+        input_ids_neg, token_type_ids_neg = base_model.prepare_input(batch_neg_docs, batch_queries, tokenizer)
         
         # Transfer batched inputs to device.
         input_ids_pos = input_ids_pos.to(device)
@@ -221,6 +223,8 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
       - Avg_Inference_Time_ms: Average time (in ms) per document.
       - Throughput_docs_per_sec: Number of documents processed per second.
     """
+    base_model = model.module if hasattr(model, "module") else model
+
     model.eval()
     results = {}  # To store scores: { query_id: { doc_id: score, ... } }
     total_inference_time = 0.0
@@ -237,7 +241,7 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
 
             # Prepare batched input tensors for the entire batch of documents paired with the query.
             # The vectorized prepare_input now accepts a list of documents and a list of queries.
-            batch_input_ids, batch_token_type_ids = model.prepare_input(batch_docs, [query] * len(batch_docs), tokenizer)
+            batch_input_ids, batch_token_type_ids = base_model.prepare_input(batch_docs, [query] * len(batch_docs), tokenizer)
             batch_input_ids = batch_input_ids.to(device)
             batch_token_type_ids = batch_token_type_ids.to(device)
 
