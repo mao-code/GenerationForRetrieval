@@ -45,8 +45,8 @@ def main():
     # Initialize GFR model.
     config = GFRConfig(
         vocab_size=len(tokenizer),
-        hidden_size=4096,        # same setting as BGE-reranker
-        intermediate_size=11008,
+        hidden_size=768,        # BGE-reranker: 4096
+        intermediate_size=3072, # BGE-reranker: 11008
         num_hidden_block=3,
         num_layers_per_block=8,
         max_position_embeddings=512,
