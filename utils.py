@@ -70,10 +70,14 @@ def prepare_training_samples(corpus: dict, queries: dict, qrels: dict):
             training_samples.append((query_text, pos_doc_text, neg_doc_text))
     return training_samples
 
-def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, batch_size, epoch):
+def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, batch_size, epoch, grad_accum_steps=1):
     """
-    Fully vectorized training loop over the training samples.
+    Fully vectorized training loop over the training samples with gradient accumulation.
     """
+    import random
+    from tqdm import tqdm
+
+    # If model is wrapped in DistributedDataParallel, get the underlying model.
     base_model = model.module if hasattr(model, "module") else model
 
     model.train()
@@ -84,10 +88,10 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
     # Set up tqdm progress bar.
     pbar = tqdm(range(num_batches), desc=f"Epoch {epoch+1}", unit="batch")
     
+    optimizer.zero_grad()
     for batch_idx in range(num_batches):
         start_idx = batch_idx * batch_size
         batch = training_samples[start_idx : start_idx + batch_size]
-        optimizer.zero_grad()
         
         # Create batched lists for queries, positive and negative documents.
         batch_queries = [query for query, pos_doc, neg_doc in batch]
@@ -112,29 +116,31 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
         target = torch.ones(score_pos.size(), device=device)
         loss = loss_fn(score_pos.view(-1), score_neg.view(-1), target.view(-1))
         
-        # Backward pass and optimizer step.
+        # Scale loss by grad_accum_steps to average the gradients.
+        loss = loss / grad_accum_steps
+        
+        # Backward pass.
         loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
+        
+        # For logging, multiply back to get the original loss per batch.
+        total_loss += loss.item() * grad_accum_steps
+        
+        # Perform an optimizer step if we've accumulated enough mini-batches, or if it is the last batch.
+        if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == num_batches:
+            optimizer.step()
+            optimizer.zero_grad()
         
         # Log to WandB.
         wandb.log({
-            "iteration_loss": loss.item(),
+            "iteration_loss": loss.item() * grad_accum_steps,
             "epoch": epoch+1,
             "batch": batch_idx+1,
             "percent_complete": 100.0 * (batch_idx+1) / num_batches
         })
         
         # Update progress bar with current loss.
-        pbar.set_postfix(loss=f"{loss.item():.4f}")
+        pbar.set_postfix(loss=f"{(loss.item() * grad_accum_steps):.4f}")
         pbar.update(1)
-        
-        # # Also log on-screen every 1000 batches.
-        # if (batch_idx + 1) % 1000 == 0 or batch_idx + 1 == num_batches:
-        #     logging.info(
-        #         f"Epoch {epoch+1}, Batch {batch_idx+1}/{num_batches}, Loss: {loss.item():.4f}, "
-        #         f"Complete: {100.0 * (batch_idx+1) / num_batches:.2f}%"
-        #     )
     
     pbar.close()
     avg_loss = total_loss / num_batches

@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=8, help="Training batch size.")
+    parser.add_argument("--grad_accum_steps", type=int, default=1, help="Number of gradient accumulation steps.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
     parser.add_argument("--distributed", action="store_true", help="Enable distributed training.")
     parser.add_argument("--eval_batch_size", type=int, default=16, help="Batch size for full retrieval evaluation.")
@@ -96,7 +97,7 @@ def main():
     # Training loop.
     for epoch in range(args.epochs):
         logging.info(f"Starting epoch {epoch+1}")
-        epoch_loss = train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, args.batch_size, epoch)
+        epoch_loss = train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, args.batch_size, epoch, args.grad_accum_steps)
         logging.info(f"Epoch {epoch+1} training loss: {epoch_loss:.4f}")
         wandb.log({"epoch": epoch+1, "training_loss": epoch_loss})
 
@@ -144,7 +145,8 @@ python -m torch.distributed.run --nproc_per_node=<NUM_GPUS> -m script.gfr_train_
 
 python -m script.gfr_train_eval \
     --epochs 3 \
-    --batch_size 4 \
+    --batch_size 2 \
+    --grad_accum_steps 4 \
     --lr 1e-4 \
     --eval_batch_size 4 \
     --datasets msmarco hotpotqa
