@@ -45,8 +45,13 @@ def main():
     # Initialize GFR model.
     config = GFRConfig(
         vocab_size=len(tokenizer),
-        hidden_size=768,        # BGE-reranker: 4096
-        intermediate_size=3072, # BGE-reranker: 11008
+        hidden_size=1024,        # BGE-reranker: 4096
+        intermediate_size=4096,  # BGE-reranker: 11008
+
+        num_attention_heads=12,
+        num_key_value_heads=12,
+        n_mamba_heads=2,
+
         num_hidden_block=3,
         num_layers_per_block=8,
         max_position_embeddings=512,
@@ -135,7 +140,7 @@ if __name__ == "__main__":
 Example usage:
 
 Distributed:
-python -m torch.distributed.run --nproc_per_node=<NUM_GPUS> -m script.gfr_train_eval --distributed --epochs 3 --batch_size 16 --lr 1e-4 --eval_batch_size 8 --datasets msmarco hotpotqa
+python -m torch.distributed.run --nproc_per_node=<NUM_GPUS> -m script.gfr_train_eval --distributed --epochs 3 --batch_size 4 --lr 1e-4 --eval_batch_size 4 --datasets msmarco hotpotqa
 
 python -m script.gfr_train_eval \
     --epochs 3 \

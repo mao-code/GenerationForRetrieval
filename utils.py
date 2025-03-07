@@ -129,12 +129,12 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
         pbar.set_postfix(loss=f"{loss.item():.4f}")
         pbar.update(1)
         
-        # Also log on-screen every 100 batches.
-        if (batch_idx + 1) % 100 == 0 or batch_idx + 1 == num_batches:
-            logging.info(
-                f"Epoch {epoch+1}, Batch {batch_idx+1}/{num_batches}, Loss: {loss.item():.4f}, "
-                f"Complete: {100.0 * (batch_idx+1) / num_batches:.2f}%"
-            )
+        # # Also log on-screen every 1000 batches.
+        # if (batch_idx + 1) % 1000 == 0 or batch_idx + 1 == num_batches:
+        #     logging.info(
+        #         f"Epoch {epoch+1}, Batch {batch_idx+1}/{num_batches}, Loss: {loss.item():.4f}, "
+        #         f"Complete: {100.0 * (batch_idx+1) / num_batches:.2f}%"
+        #     )
     
     pbar.close()
     avg_loss = total_loss / num_batches
