@@ -946,6 +946,11 @@ GFR_INPUTS_DOCSTRING = r"""
 
 class GFRModel(GFRPreTrainedModel):
     """
+    Base GFR model that returns the final hidden states.
+    
+    This model implements the layer-by-layer transformer backbone.
+    It accepts input_ids and returns the hidden states.
+
     A "layer-by-layer" variant of your original GFRModel. 
 
     Instead of creating full blocks via GFRBlock, we explicitly create each sub-layer in sequence:
@@ -967,19 +972,15 @@ class GFRModel(GFRPreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        # Embeddings
+        # Embeddings: token embeddings and token-type embeddings.
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        # An example segment (token type) embedding, if desired
-        self.token_type_embeddings = nn.Embedding(2, config.hidden_size)
+        # self.token_type_embeddings = nn.Embedding(2, config.hidden_size)
 
-        # We will create each block as 8 layers in a single list,
-        # since your GFRBlock is effectively T1 -> M1 -> M2 -> M3 -> (skip T1) -> T2 -> M4 -> M5 -> M6.
+        # Build the backbone with repeated blocks. Each block consists of 8 sub-layers.
         self.layers = nn.ModuleList()
-        # If each block has 8 layers, do repeated blocks if config.num_hidden_blocks > 1
-        # (the original GFRBlock code does exactly 8 sub-layers per block).
         self.num_hidden_blocks = config.num_hidden_blocks
-        self.num_layers_per_block = config.num_layers_per_block
-        self.num_hidden_layers = config.num_hidden_layers
+        self.num_layers_per_block = config.num_layers_per_block  # e.g., 9 (if you count the linear projection)
+        self.num_hidden_layers = config.num_hidden_layers  # total number of sub-layers
         for block_idx in range(self.num_hidden_blocks):
             base_idx = block_idx * self.num_layers_per_block
             # 1) Transformer block T1 (no concatenation)
@@ -1014,7 +1015,7 @@ class GFRModel(GFRPreTrainedModel):
                     concat_input=False
                 )
             )
-            # 5) Transformer block T2 (concat_input=True)
+            # 5) Transformer block T2 (with concatenation)
             self.layers.append(
                 GFRAttentionDecoderLayer(
                     config,
@@ -1022,10 +1023,11 @@ class GFRModel(GFRPreTrainedModel):
                     concat_input=True
                 )
             )
+            #  Linear projection after T2 to match hidden size
             self.layers.append(
                 nn.Linear(
-                    2 * config.hidden_size, 
-                    config.hidden_size, 
+                    2 * config.hidden_size,
+                    config.hidden_size,
                     bias=True
                 )
             )
@@ -1054,21 +1056,12 @@ class GFRModel(GFRPreTrainedModel):
                 )
             )
 
-        # Final RMSNorm
+        # Final normalization layer.
         self.final_layernorm = GFRRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        # Scoring head: from [CLS] hidden state -> scalar
-        self.score_head = nn.Linear(config.hidden_size, 1)
-
-        # Some needed flags
+        # A flag for gradient checkpointing.
         self.gradient_checkpointing = False
         self.post_init()
-
-    def get_input_embeddings(self):
-        return self.embed_tokens
-
-    def set_input_embeddings(self, new_embeddings):
-        self.embed_tokens = new_embeddings
 
     @add_start_docstrings_to_model_forward("GFR Model forward", "GFR_INPUTS_DOCSTRING")
     def forward(
@@ -1087,47 +1080,39 @@ class GFRModel(GFRPreTrainedModel):
         **kwargs,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         """
-        Input Format:
-        [CLS], d1, d2, ..., dM, [SEP], q1, q2, ..., qN
-        The [CLS] is in position 0, which we eventually use for the final pooled representation.
+        Processes the input and returns the final hidden states.
         """
-        # Handle default Booleans
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # If gradient checkpointing is enabled, we cannot use cache
+        # If gradient checkpointing is enabled, we cannot use cache.
         if self.gradient_checkpointing and self.training and use_cache:
             logger.warning_once(
                 "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
             )
             use_cache = False
 
-        # Exactly one of {input_ids, inputs_embeds} must be specified
+        # Exactly one of {input_ids, inputs_embeds} must be provided.
         if (input_ids is None) == (inputs_embeds is None):
-            raise ValueError(
-                "You must specify either input_ids or inputs_embeds (but not both)."
-            )
+            raise ValueError("You must specify either input_ids or inputs_embeds (but not both).")
 
-        # Embed the inputs
+        # Embed the inputs.
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)  # (batch, seq_len, hidden_size)
 
-        # If token_type_ids is missing, default it to zeros
+        # If token_type_ids is missing, default to zeros.
         if token_type_ids is None and input_ids is not None:
-            token_type_ids = torch.zeros_like(input_ids)  # same shape as input_ids
+            token_type_ids = torch.zeros_like(input_ids)
+        # token_type_embeds = self.token_type_embeddings(token_type_ids)  # (batch, seq_len, hidden_size)
 
-        # Token-type embeddings
-        token_type_embeds = self.token_type_embeddings(token_type_ids)  # shape: (batch, seq_len, hidden_size)
-
-        # Sum embeddings
-        hidden_states = inputs_embeds + token_type_embeds
+        # Sum token and token-type embeddings.
+        # hidden_states = inputs_embeds + token_type_embeds
+        hidden_states = inputs_embeds
         original_hidden_states = hidden_states.clone()
 
-        # Possibly handle positions & caching
         batch_size, seq_len, _ = hidden_states.shape
-        # print( f"batch_size: {batch_size}, seq_len: {seq_len}" )
         if cache_position is None:
             cache_position = torch.arange(seq_len, device=hidden_states.device)
         if position_ids is None:
@@ -1138,17 +1123,15 @@ class GFRModel(GFRPreTrainedModel):
                 "GFR requires an initialized `GFRHybridDynamicCache` to return a cache. None was provided."
             )
 
-        # Build or update your causal mask as needed
+        # Build (or update) the causal mask as needed.
         causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position)
 
-        # Prepare outputs
         all_hidden_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
 
-        layer_index = 0  # index in self.layers
+        layer_index = 0
+        # Iterate over each block.
         for block_idx in range(self.num_hidden_blocks):
-            # block_input = hidden_states  # save the block input for T2's concatenation
-
             # ----- 1) Transformer T1 -----
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -1176,9 +1159,7 @@ class GFRModel(GFRPreTrainedModel):
                     cache_position=cache_position,
                     **kwargs,
                 )
-
             T1_out = layer_outputs[0]
-            # collect attention if not None
             if output_attentions and layer_outputs[1] is not None:
                 all_attentions += (layer_outputs[1],)
             layer_index += 1
@@ -1241,11 +1222,10 @@ class GFRModel(GFRPreTrainedModel):
                 all_attentions += (layer_outputs[1],)
             layer_index += 1
 
-            # After M3, we do the skip connection for the next mamba block
+            # Save Mamba 3 output for later skip connection.
             mamba3_output_hidden_states = hidden_states
 
             # ----- 5) Transformer T2 (concat_input=True) -----
-            # This sub-layer must receive `original_hidden_states` to do the concatenation
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
             layer_outputs = self.layers[layer_index](
@@ -1264,15 +1244,16 @@ class GFRModel(GFRPreTrainedModel):
                 all_attentions += (layer_outputs[1],)
             layer_index += 1
 
-            # Linear Projection
+            # Linear projection after T2.
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
             layer_outputs = self.layers[layer_index](hidden_states)
             hidden_states = layer_outputs
             layer_index += 1
 
-            # After M3, we do the skip connection for the next mamba block
+            # Add skip connection from Mamba 3's output.
             hidden_states = hidden_states + mamba3_output_hidden_states
+
             # ----- 6) Mamba 4 -----
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -1330,31 +1311,184 @@ class GFRModel(GFRPreTrainedModel):
                 all_attentions += (layer_outputs[1],)
             layer_index += 1
 
+        # Final normalization.
         hidden_states = self.final_layernorm(hidden_states)
-
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        # Mark the cache as having been used once
         if past_key_values is not None and not past_key_values.has_previous_state:
             past_key_values.has_previous_state = True
 
-        # Use [CLS] (the first token) as the "pooled" representation
-        cls_token = hidden_states[:, 0, :]  # shape: (batch, hidden_size)
-        # score = torch.sigmoid(self.score_head(cls_token))  # final scalar per example (not good for margin ranking loss)
-        score = self.score_head(cls_token)  # final raw score per example (to be used in loss function)
-
         if not return_dict:
-            # If you just want the score, or (score, past_key_values) if use_cache
-            return (score, past_key_values) if use_cache else (score,)
+            return (hidden_states, past_key_values) if use_cache else (hidden_states,)
         else:
-            # Return a huggingface-style output struct
-            return score, BaseModelOutputWithPast(
+            return BaseModelOutputWithPast(
                 last_hidden_state=hidden_states,
                 past_key_values=past_key_values if use_cache else None,
                 hidden_states=all_hidden_states,
                 attentions=all_attentions,
             )
+        
+        # Copied from transformers.models.jamba.modeling_jamba.JambaModel._update_causal_mask
+    def _update_causal_mask(self, attention_mask, input_tensor, cache_position):
+        if self.config._attn_implementation == "flash_attention_2":
+            if attention_mask is not None and 0.0 in attention_mask:
+                return attention_mask
+            return None
+
+        dtype, device = input_tensor.dtype, input_tensor.device
+        min_dtype = torch.finfo(dtype).min
+        sequence_length = input_tensor.shape[1]
+        target_length = cache_position[-1] + 1
+
+        causal_mask = torch.full((sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device)
+        if sequence_length != 1:
+            causal_mask = torch.triu(causal_mask, diagonal=1)
+        causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
+        causal_mask = causal_mask[None, None, :, :].expand(input_tensor.shape[0], 1, -1, -1)
+        if attention_mask is not None:
+            causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
+            if attention_mask.dim() == 2:
+                mask_length = attention_mask.shape[-1]
+                padding_mask = causal_mask[..., :mask_length].eq(0.0) * attention_mask[:, None, None, :].eq(0.0)
+                causal_mask[..., :mask_length] = causal_mask[..., :mask_length].masked_fill(padding_mask, min_dtype)
+
+        if (
+            self.config._attn_implementation == "sdpa"
+            and attention_mask is not None
+            and attention_mask.device.type in ["cuda", "xpu"]
+        ):
+            # Attend to all tokens in fully masked rows in the causal_mask, for example the relevant first rows when
+            # using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path.
+            # Details: https://github.com/pytorch/pytorch/issues/110213
+            causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
+
+        return causal_mask
+
+class GFRForCausalLM(GFRPreTrainedModel):
+    """
+    GFR model with a causal language modeling head.
+    
+    This model wraps the GFRModel backbone and adds an LM head that projects
+    the final hidden states at every position to vocabulary logits.
+    """
+    def __init__(self, config: "GFRConfig"):
+        super().__init__(config)
+        self.config = config
+        self.gfr = GFRModel(config)
+        # LM head: projects hidden states to logits over the vocabulary.
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.post_init()
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        token_type_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional["GFRHybridDynamicCache"] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ) -> Union[Tuple, BaseModelOutputWithPast]:
+        """
+        Forward pass for causal language modeling.
+        
+        The backbone outputs hidden states which are passed through the LM head
+        to produce logits over the vocabulary.
+        """
+        outputs = self.gfr(
+            input_ids=input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=True,
+            cache_position=cache_position,
+            **kwargs,
+        )
+        hidden_states = outputs.last_hidden_state
+        logits = self.lm_head(hidden_states)  # (batch, seq_len, vocab_size)
+
+        if not return_dict:
+            return (logits, outputs.past_key_values) if use_cache else (logits,)
+        else:
+            # You can also choose to wrap the logits in a custom output class.
+            return BaseModelOutputWithPast(
+                last_hidden_state=logits,
+                past_key_values=outputs.past_key_values if use_cache else None,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
+            )
+
+
+class GFRForSequenceScoring(GFRPreTrainedModel):
+    """
+    GFR model for sequence scoring.
+    
+    This model wraps the GFRModel backbone and adds a score head that uses
+    the [CLS] token (first token) hidden state for scoring.
+    """
+    def __init__(self, config: "GFRConfig"):
+        super().__init__(config)
+        self.config = config
+        self.gfr = GFRModel(config)
+        # Score head: projects the [CLS] token's hidden state to class logits.
+        self.score_head = nn.Linear(config.hidden_size, 1)
+        self.post_init()
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        token_type_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional["GFRHybridDynamicCache"] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ) -> Union[Tuple, BaseModelOutputWithPast]:
+        """
+        Forward pass for sequence classification.
+        
+        The backbone outputs hidden states and the [CLS] token (first token)
+        is passed through the score head to produce logits.
+        """
+        outputs = self.gfr(
+            input_ids=input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=True,  # Force output hidden states for [CLS]
+            return_dict=True,
+            cache_position=cache_position,
+            **kwargs,
+        )
+        hidden_states = outputs.last_hidden_state  # (batch, seq_len, hidden_size)
+        # Use the first token ([CLS]) for classification.
+        cls_token = hidden_states[:, 0, :]
+        logits = self.score_head(cls_token)
+
+        if not return_dict:
+            return (logits,)
+        else:
+            return logits, outputs
         
     def prepare_input(self, documents: list, queries: list, tokenizer, max_length: int = 1024):
         """
@@ -1412,41 +1546,5 @@ class GFRModel(GFRPreTrainedModel):
         token_type_ids_tensor = torch.tensor(token_type_ids_list, dtype=torch.long)
         
         return input_ids_tensor, token_type_ids_tensor
-    
-    # Copied from transformers.models.jamba.modeling_jamba.JambaModel._update_causal_mask
-    def _update_causal_mask(self, attention_mask, input_tensor, cache_position):
-        if self.config._attn_implementation == "flash_attention_2":
-            if attention_mask is not None and 0.0 in attention_mask:
-                return attention_mask
-            return None
 
-        dtype, device = input_tensor.dtype, input_tensor.device
-        min_dtype = torch.finfo(dtype).min
-        sequence_length = input_tensor.shape[1]
-        target_length = cache_position[-1] + 1
-
-        causal_mask = torch.full((sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device)
-        if sequence_length != 1:
-            causal_mask = torch.triu(causal_mask, diagonal=1)
-        causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
-        causal_mask = causal_mask[None, None, :, :].expand(input_tensor.shape[0], 1, -1, -1)
-        if attention_mask is not None:
-            causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
-            if attention_mask.dim() == 2:
-                mask_length = attention_mask.shape[-1]
-                padding_mask = causal_mask[..., :mask_length].eq(0.0) * attention_mask[:, None, None, :].eq(0.0)
-                causal_mask[..., :mask_length] = causal_mask[..., :mask_length].masked_fill(padding_mask, min_dtype)
-
-        if (
-            self.config._attn_implementation == "sdpa"
-            and attention_mask is not None
-            and attention_mask.device.type in ["cuda", "xpu"]
-        ):
-            # Attend to all tokens in fully masked rows in the causal_mask, for example the relevant first rows when
-            # using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path.
-            # Details: https://github.com/pytorch/pytorch/issues/110213
-            causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
-
-        return causal_mask
-
-__all__ = ["GFRModel", "GFRPreTrainedModel"]
+__all__ = ["GFRPreTrainedModel", "GFRModel", "GFRForCausalLM", "GFRForSequenceClassification"]

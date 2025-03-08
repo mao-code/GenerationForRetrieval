@@ -143,11 +143,11 @@ Example usage:
 Distributed:
 python -m torch.distributed.run --nproc_per_node=<NUM_GPUS> -m script.gfr_train_eval --distributed --epochs 3 --batch_size 4 --lr 1e-4 --eval_batch_size 4 --datasets msmarco hotpotqa
 
-python -m script.gfr_train_eval \
+python -m script.gfr_docrank_finetune \
     --epochs 3 \
     --batch_size 2 \
     --grad_accum_steps 4 \
     --lr 1e-4 \
-    --eval_batch_size 4 \
+    --eval_batch_size 2 \
     --datasets msmarco hotpotqa
 """
