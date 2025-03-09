@@ -76,10 +76,18 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
 
 # ========= Load and Preprocess the RedPajama Dataset ========= #
-# Here we use a subset for demonstration purposes.
-# For full pretraining, remove the slicing.
-train_dataset = load_dataset("togethercomputer/redpajama_open", split="train[:1%]")
-eval_dataset = load_dataset("togethercomputer/redpajama_open", split="train[:0.1%]")
+# Here we load a fraction (e.g., 12.5%) of the train split to get about 300B tokens.
+# For demo, you can use 0.1% of the tain split.
+train_dataset = load_dataset(
+    "togethercomputer/RedPajama-Data-V2", split="train[:0.1%]",
+    languages=["en"],
+    streaming=True
+)
+eval_dataset = load_dataset(
+    "togethercomputer/RedPajama-Data-V2", split="train[0.1%:0.15%]",
+    languages=["en"],
+    streaming=True
+) 
 
 def tokenize_function(example):
     # Assumes each example has a "text" field.
@@ -111,7 +119,7 @@ warmup_steps = int(0.1 * total_training_steps)
 
 # ========= Define Training Arguments ========= #
 training_args = TrainingArguments(
-    output_dir="./gfr_pretrain_redpajama",
+    output_dir="./gfr_pretrain_redpajama_v2",
     overwrite_output_dir=True,
     num_train_epochs=num_train_epochs,
     per_device_train_batch_size=per_device_train_batch_size,
@@ -155,5 +163,5 @@ results = trainer.evaluate()
 print("Final Evaluation Results:", results)
 
 # ========= Save the Final Model ========= #
-trainer.save_model("./gfr_causal_lm_final_redpajama")
+trainer.save_model("./gfr_causal_lm_final_redpajama_v2")
 wandb.finish()
