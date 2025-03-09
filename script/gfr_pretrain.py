@@ -8,26 +8,29 @@ from transformers import (
     LlamaTokenizer,
     DataCollatorForLanguageModeling,
 )
-from datasets import load_dataset
-import datetime
+from datasets import load_dataset, Dataset
+from datetime import datetime
+import logging
+from sklearn.model_selection import train_test_split
+import numpy as np
+from itertools import islice
 
-from model import GFRForCausalLM, GFRConfig
+from GFR.modeling_GFR import GFRForCausalLM, GFRConfig
+
+# Setup logging
+logging.basicConfig(
+    format="%(asctime)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=logging.INFO,
+)
 
 # ========= Hyperparameters and Settings ========= #
 # Standard training settings
 learning_rate = 1e-4
-batch_size = 2
+per_device_train_batch_size = 2
 gradient_accumulation_steps = 16
-num_epochs = 3
+num_train_epochs = 1
 max_seq_length = 1024  # maximum sequence length for the LM
-warmup_steps = 1000    # number of warmup steps for the LR scheduler
-
-# Total training steps: if you know the total number of training examples, you can compute this.
-# For demonstration, we set it to a fixed value.
-total_training_steps = 100000  
-
-# Evaluation every N global steps
-eval_steps = 1000
 
 # Wandb settings
 run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -38,9 +41,9 @@ wandb_entity = "your_group_name"
 # ========= Initialize Wandb ========= #
 wandb.init(project=wandb_project, entity=wandb_entity, name=run_name, config={
     "learning_rate": learning_rate,
-    "batch_size": batch_size,
+    "per_device_train_batch_size": per_device_train_batch_size,
     "gradient_accumulation_steps": gradient_accumulation_steps,
-    "num_epochs": num_epochs,
+    "num_train_epochs": num_train_epochs,
     "max_seq_length": max_seq_length
 })
 
@@ -52,10 +55,11 @@ if tokenizer.pad_token is None:
 
 # ========= Load Model ========= #
 # Define your model configuration. Adjust the parameters as needed.
+logging.info("Initializing GFR model for pretraining...")
 config = GFRConfig(
     vocab_size=len(tokenizer),
-    hidden_size=1024,        
-    intermediate_size=4096,  
+    hidden_size=max_seq_length,        
+    intermediate_size=max_seq_length*4,  
 
     num_attention_heads=16,
     num_key_value_heads=16,
@@ -70,49 +74,62 @@ config = GFRConfig(
     eos_token_id=tokenizer.eos_token_id,
 )
 model = GFRForCausalLM(config)
-# If you added tokens to the tokenizer, you might need to resize the model's embeddings.
-model.gfr.embed_tokens.resize_token_embeddings(len(tokenizer))
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
+num_params = sum(p.numel() for p in model.parameters())
+logging.info(f"Number of parameters: {num_params}")
 
 # ========= Load and Preprocess the RedPajama Dataset ========= #
-# Here we load a fraction (e.g., 12.5%) of the train split to get about 300B tokens.
-# For demo, you can use 0.1% of the tain split.
-train_dataset = load_dataset(
-    "togethercomputer/RedPajama-Data-V2", split="train[:0.1%]",
+logging.info("Loading RedPajama dataset...")
+
+# Define how many examples to use for evaluation.
+eval_size = 1000
+
+# For evaluation, load the dataset in streaming mode and materialize the first eval_size examples.
+raw_eval_stream = load_dataset(
+    "togethercomputer/RedPajama-Data-V2", 
+    name="default",
     languages=["en"],
-    streaming=True
+    split="train",
+    streaming=True,
+    trust_remote_code=True
 )
-eval_dataset = load_dataset(
-    "togethercomputer/RedPajama-Data-V2", split="train[0.1%:0.15%]",
+eval_examples = list(islice(raw_eval_stream, eval_size))
+logging.info(f"Loaded {len(eval_examples)} evaluation examples.")
+
+# For training, reload the streaming dataset and skip the first eval_size examples.
+raw_train_stream = load_dataset(
+    "togethercomputer/RedPajama-Data-V2", 
+    name="default",
     languages=["en"],
-    streaming=True
-) 
+    split="train",
+    streaming=True,
+    trust_remote_code=True
+)
+# Skip evaluation examples.
+raw_train_stream = raw_train_stream.skip(eval_size)
 
 def tokenize_function(example):
-    # Assumes each example has a "text" field.
-    return tokenizer(example["text"], truncation=True, max_length=max_seq_length)
+    # Redpajama dataset has a "raw_content" field.
+    return tokenizer(example["raw_content"], truncation=True, max_length=max_seq_length)
 
-# Tokenize both training and evaluation splits.
-train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
-eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+# Materialize and tokenize the evaluation set.
+eval_dataset = Dataset.from_list(eval_examples)
+eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["raw_content"])
+
+# Apply tokenization in a batched fashion.
+train_dataset = raw_train_stream.map(tokenize_function, batched=True)
 
 # ========= Data Collator for Causal LM ========= #
 # For causal language modeling we do not use masked LM.
 data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-
-# ========= Compute Total Training Steps ========= #
-# Total number of training examples from the dataset length.
-total_training_examples = len(train_dataset)
-per_device_train_batch_size = 2
-gradient_accumulation_steps = 16
-num_train_epochs = 3
-
-steps_per_epoch = math.ceil(total_training_examples / (per_device_train_batch_size * gradient_accumulation_steps))
+# ========= Set Total Training Steps ========= #
+# Since the training dataset is streaming (no fixed length), define the desired number of training examples.
+max_training_examples = 1000000  # adjust as needed
+steps_per_epoch = math.ceil(max_training_examples / (per_device_train_batch_size * gradient_accumulation_steps))
 total_training_steps = steps_per_epoch * num_train_epochs
-print(f"Total training examples: {total_training_examples}")
-print(f"Total training steps: {total_training_steps}")
+print(f"Total training steps (approx): {total_training_steps}")
 
 # Optionally, define warmup steps as a fraction of total steps.
 warmup_steps = int(0.1 * total_training_steps)
@@ -122,16 +139,18 @@ training_args = TrainingArguments(
     output_dir="./gfr_pretrain_redpajama_v2",
     overwrite_output_dir=True,
     num_train_epochs=num_train_epochs,
+    max_steps=total_training_steps,  # explicitly stop training after these many steps
     per_device_train_batch_size=per_device_train_batch_size,
-    per_device_eval_batch_size=per_device_train_batch_size,
+    per_device_eval_batch_size=per_device_train_batch_size // 2,
     gradient_accumulation_steps=gradient_accumulation_steps,
-    evaluation_strategy="steps",
+    eval_strategy="steps",
     eval_steps=1000,
     logging_steps=100,
-    learning_rate=1e-4,
-    warmup_steps=warmup_steps,
-    save_steps=1000,
-    report_to="wandb",  # Log training to wandb.
+    logging_first_step=True,
+    learning_rate=learning_rate,
+    warmup_steps=int(0.1 * total_training_steps),
+    save_steps=10000,
+    report_to="wandb",  # log training metrics to wandb
     logging_dir="./logs",
 )
 
@@ -139,9 +158,14 @@ training_args = TrainingArguments(
 # For evaluation, compute loss and perplexity.
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
+    # Convert from numpy arrays to torch tensors if necessary.
+    if isinstance(logits, np.ndarray):
+        logits = torch.from_numpy(logits)
+        labels = torch.from_numpy(labels)
     # Shift logits and labels for next-token prediction.
     shift_logits = logits[:, :-1, :].contiguous()
     shift_labels = labels[:, 1:].contiguous()
+    
     loss_fct = torch.nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
     loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
     perplexity = math.exp(loss.item()) if loss.item() < 20 else float("inf")
@@ -151,17 +175,22 @@ def compute_metrics(eval_pred):
 trainer = Trainer(
     model=model,
     args=training_args,
-    train_dataset=train_dataset,
-    eval_dataset=eval_dataset,
+    train_dataset=train_dataset,  # streaming training dataset (an iterator)
+    eval_dataset=eval_dataset,    # materialized evaluation dataset
     data_collator=data_collator,
     compute_metrics=compute_metrics,
 )
 
 # ========= Train and Evaluate ========= #
+logging.info("Starting training...")
 trainer.train()
 results = trainer.evaluate()
-print("Final Evaluation Results:", results)
+logging.info("Final Evaluation Results:", results)
 
 # ========= Save the Final Model ========= #
 trainer.save_model("./gfr_causal_lm_final_redpajama_v2")
 wandb.finish()
+
+"""
+python -m script.gfr_pretrain
+"""

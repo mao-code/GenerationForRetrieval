@@ -222,7 +222,13 @@ def eager_attention_forward(
     value_states = repeat_kv(value, module.num_key_value_groups)
 
     attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    # if attention_mask is not None:
+    #     causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+    #     attn_weights = attn_weights + causal_mask
     if attention_mask is not None:
+        # If the attention_mask is 2D, convert it to 4D by unsqueezing dimensions.
+        if attention_mask.dim() == 2:
+            attention_mask = attention_mask[:, None, None, :]
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
         attn_weights = attn_weights + causal_mask
 
@@ -976,10 +982,13 @@ class GFRModel(GFRPreTrainedModel):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         # self.token_type_embeddings = nn.Embedding(2, config.hidden_size)
 
+        # Add tied weights keys: indicate that lm_head.weight should share the same weights as embed_tokens.weight.
+        self._tied_weights_keys = ["embed_tokens.weight"]
+
         # Build the backbone with repeated blocks. Each block consists of 8 sub-layers.
         self.layers = nn.ModuleList()
         self.num_hidden_blocks = config.num_hidden_blocks
-        self.num_layers_per_block = config.num_layers_per_block  # e.g., 9 (if you count the linear projection)
+        self.num_layers_per_block = config.num_layers_per_block 
         self.num_hidden_layers = config.num_hidden_layers  # total number of sub-layers
         for block_idx in range(self.num_hidden_blocks):
             base_idx = block_idx * self.num_layers_per_block
@@ -1062,6 +1071,12 @@ class GFRModel(GFRPreTrainedModel):
         # A flag for gradient checkpointing.
         self.gradient_checkpointing = False
         self.post_init()
+    
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
 
     @add_start_docstrings_to_model_forward("GFR Model forward", "GFR_INPUTS_DOCSTRING")
     def forward(
@@ -1329,7 +1344,7 @@ class GFRModel(GFRPreTrainedModel):
                 attentions=all_attentions,
             )
         
-        # Copied from transformers.models.jamba.modeling_jamba.JambaModel._update_causal_mask
+    # Copied from transformers.models.jamba.modeling_jamba.JambaModel._update_causal_mask
     def _update_causal_mask(self, attention_mask, input_tensor, cache_position):
         if self.config._attn_implementation == "flash_attention_2":
             if attention_mask is not None and 0.0 in attention_mask:
@@ -1375,10 +1390,30 @@ class GFRForCausalLM(GFRPreTrainedModel):
     def __init__(self, config: "GFRConfig"):
         super().__init__(config)
         self.config = config
-        self.gfr = GFRModel(config)
+        self.model = GFRModel(config)
+        self.vocab_size = config.vocab_size
         # LM head: projects hidden states to logits over the vocabulary.
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self._tied_weights_keys = ["lm_head.weight", *self.model._tied_weights_keys]
         self.post_init()
+
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
 
     def forward(
         self,
@@ -1388,20 +1423,22 @@ class GFRForCausalLM(GFRPreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional["GFRHybridDynamicCache"] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        **kwargs,
-    ) -> Union[Tuple, BaseModelOutputWithPast]:
+        logits_to_keep: Union[int, torch.Tensor] = 0,
+        **loss_kwargs,
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
         """
         Forward pass for causal language modeling.
         
         The backbone outputs hidden states which are passed through the LM head
         to produce logits over the vocabulary.
         """
-        outputs = self.gfr(
+        outputs = self.model(
             input_ids=input_ids,
             token_type_ids=token_type_ids,
             attention_mask=attention_mask,
@@ -1412,23 +1449,28 @@ class GFRForCausalLM(GFRPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=True,
-            cache_position=cache_position,
-            **kwargs,
+            cache_position=cache_position
         )
         hidden_states = outputs.last_hidden_state
-        logits = self.lm_head(hidden_states)  # (batch, seq_len, vocab_size)
+        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        logits = self.lm_head(hidden_states[:, slice_indices, :]) # (batch, seq_len, vocab_size)
+
+        loss = None
+        if labels is not None:
+            loss = self.loss_function(logits, labels, self.vocab_size, **loss_kwargs)
 
         if not return_dict:
-            return (logits, outputs.past_key_values) if use_cache else (logits,)
-        else:
-            # You can also choose to wrap the logits in a custom output class.
-            return BaseModelOutputWithPast(
-                last_hidden_state=logits,
-                past_key_values=outputs.past_key_values if use_cache else None,
-                hidden_states=outputs.hidden_states,
-                attentions=outputs.attentions,
-            )
+            output = (logits,) + outputs[1:]
+            return (loss,) + output if loss is not None else output
 
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
 
 class GFRForSequenceScoring(GFRPreTrainedModel):
     """
@@ -1453,11 +1495,13 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional["GFRHybridDynamicCache"] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        logits_to_keep: Union[int, torch.Tensor] = 0,
         **kwargs,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         """
@@ -1547,4 +1591,4 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
         
         return input_ids_tensor, token_type_ids_tensor
 
-__all__ = ["GFRPreTrainedModel", "GFRModel", "GFRForCausalLM", "GFRForSequenceClassification"]
+__all__ = ["GFRPreTrainedModel", "GFRModel", "GFRForCausalLM", "GFRForSequenceScoring"]

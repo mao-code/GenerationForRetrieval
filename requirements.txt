@@ -6,3 +6,4 @@ mamba-ssm
 
 torchinfo
 wandb
+sentencepiece
