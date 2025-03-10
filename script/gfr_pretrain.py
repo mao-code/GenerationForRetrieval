@@ -7,6 +7,7 @@ from transformers import (
     TrainingArguments,
     LlamaTokenizer,
     DataCollatorForLanguageModeling,
+    TrainerCallback
 )
 from datasets import load_dataset, Dataset
 from datetime import datetime
@@ -50,6 +51,14 @@ class CustomTrainer(Trainer):
         # If you use wandb or another logger, you can log here as well:
         self.log({"total_tokens_processed": self.total_tokens})
         return output
+
+class TokenLoggingCallback(TrainerCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        logs = logs or {}
+        # Include total tokens processed in the logs.
+        logs["tokens_processed"] = kwargs["trainer"].total_tokens
+        wandb.log(logs)
+        return control
 
 # ========= Hyperparameters and Settings ========= #
 # Standard training settings
@@ -109,48 +118,41 @@ num_params = sum(p.numel() for p in model.parameters())
 logging.info(f"Number of parameters: {num_params}")
 
 # ========= Load and Preprocess the RedPajama Dataset ========= #
-logging.info("Loading RedPajama dataset...")
+logging.info("Loading FineWeb-Edu dataset...")
 
 # Define how many examples to use for evaluation.
 eval_size = 100
 
 # For evaluation, load the dataset in streaming mode and materialize the first eval_size examples.
 raw_eval_stream = load_dataset(
-    "togethercomputer/RedPajama-Data-V2", 
-    name="default",
-    languages=["en"],
+    "HuggingFaceFW/fineweb-edu", 
     split="train",
-    streaming=True,
-    trust_remote_code=True
+    streaming=True
 )
 eval_examples = list(islice(raw_eval_stream, eval_size))
 logging.info(f"Loaded {len(eval_examples)} evaluation examples.")
 
 # For training, reload the streaming dataset and skip the first eval_size examples.
 raw_train_stream = load_dataset(
-    "togethercomputer/RedPajama-Data-V2", 
-    name="default",
-    languages=["en"],
+    "HuggingFaceFW/fineweb-edu", 
     split="train",
-    streaming=True,
-    trust_remote_code=True
+    streaming=True
 )
-# Skip evaluation examples.
 raw_train_stream = raw_train_stream.skip(eval_size)
 
 def tokenize_function(example):
-    # Redpajama dataset has a "raw_content" field.
-    return tokenizer(example["raw_content"], truncation=True, max_length=max_seq_length)
+    # FineWeb-Edu dataset has a "text" field.
+    return tokenizer(example["text"], truncation=True, max_length=max_seq_length)
 
 # Materialize and tokenize the evaluation set.
 eval_dataset = Dataset.from_list(eval_examples)
-eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["raw_content"])
+eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
 
 val_test_splits = eval_dataset.train_test_split(test_size=0.5, seed=42)
 validation_dataset = val_test_splits["train"]
 test_dataset = val_test_splits["test"]
 
-# Apply tokenization in a batched fashion.
+# Apply tokenization to the streaming training dataset.
 train_dataset = raw_train_stream.map(tokenize_function, batched=True)
 
 # ========= Data Collator for Causal LM ========= #
@@ -158,8 +160,9 @@ train_dataset = raw_train_stream.map(tokenize_function, batched=True)
 data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
 # ========= Set Total Training Steps ========= #
-# Since the training dataset is streaming (no fixed length), define the desired number of training examples.
-max_training_examples = 1000000  # adjust as needed
+max_training_examples = int(300e9 / 1024)
+logging.info(f"Setting max_training_examples to {max_training_examples} documents to target ~300B tokens.")
+
 steps_per_epoch = math.ceil(max_training_examples / (per_device_train_batch_size * gradient_accumulation_steps))
 total_training_steps = steps_per_epoch * num_train_epochs
 print(f"Total training steps (approx): {total_training_steps}")
@@ -169,10 +172,10 @@ warmup_steps = int(0.1 * total_training_steps)
 
 # ========= Define Training Arguments ========= #
 training_args = TrainingArguments(
-    output_dir="./gfr_pretrain_redpajama_v2",
+    output_dir="./gfr_pretrain_finewebedu",
     overwrite_output_dir=True,
     num_train_epochs=num_train_epochs,
-    max_steps=total_training_steps,  # explicitly stop training after these many steps
+    max_steps=total_training_steps,  # training stops after these many steps
     per_device_train_batch_size=per_device_train_batch_size,
     per_device_eval_batch_size=per_device_eval_batch_size,
     gradient_accumulation_steps=gradient_accumulation_steps,
@@ -182,9 +185,9 @@ training_args = TrainingArguments(
     logging_steps=50,
     logging_first_step=True,
     learning_rate=learning_rate,
-    warmup_steps=int(0.1 * total_training_steps),
+    warmup_steps=warmup_steps,
     save_steps=10000,
-    report_to="wandb",  # log training metrics to wandb
+    report_to="wandb",
     logging_dir="./logs",
 )
 
@@ -215,6 +218,7 @@ trainer = CustomTrainer(
     data_collator=data_collator,
     compute_metrics=compute_metrics,
 )
+trainer.add_callback(TokenLoggingCallback())
 
 # ========= Train and Evaluate ========= #
 logging.info("Starting training...")
