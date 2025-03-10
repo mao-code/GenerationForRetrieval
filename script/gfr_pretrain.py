@@ -24,11 +24,40 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+class CustomTrainer(Trainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.total_tokens = 0
+        self.processing_class = getattr(self.data_collator, "tokenizer", None)
+        if self.processing_class is None:
+            raise ValueError("No tokenizer found on the data_collator. Please provide a valid tokenizer.")
+        
+    def training_step(self, model, inputs, *args, **kwargs):
+        # Count tokens in the batch (ignoring pad tokens)
+        token_tensor = inputs["input_ids"]
+        # Count tokens that are not padding tokens
+        tokens_in_batch = (token_tensor != self.processing_class.pad_token_id).sum().item()
+        self.total_tokens += tokens_in_batch
+
+        # Run the usual training step
+        return super().training_step(model, inputs, *args, **kwargs)
+
+    def train(self, *args, **kwargs):
+        # Run the standard training loop
+        output = super().train(*args, **kwargs)
+        # Log the total tokens processed at the end of training
+        logging.info(f"Total tokens processed during training: {self.total_tokens}")
+        # If you use wandb or another logger, you can log here as well:
+        self.log({"total_tokens_processed": self.total_tokens})
+        return output
+
 # ========= Hyperparameters and Settings ========= #
 # Standard training settings
 learning_rate = 1e-4
 per_device_train_batch_size = 2
 gradient_accumulation_steps = 16
+per_device_eval_batch_size = 1
+eval_accumulation_steps=2
 num_train_epochs = 1
 max_seq_length = 1024  # maximum sequence length for the LM
 
@@ -83,7 +112,7 @@ logging.info(f"Number of parameters: {num_params}")
 logging.info("Loading RedPajama dataset...")
 
 # Define how many examples to use for evaluation.
-eval_size = 1000
+eval_size = 100
 
 # For evaluation, load the dataset in streaming mode and materialize the first eval_size examples.
 raw_eval_stream = load_dataset(
@@ -117,6 +146,10 @@ def tokenize_function(example):
 eval_dataset = Dataset.from_list(eval_examples)
 eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["raw_content"])
 
+val_test_splits = eval_dataset.train_test_split(test_size=0.5, seed=42)
+validation_dataset = val_test_splits["train"]
+test_dataset = val_test_splits["test"]
+
 # Apply tokenization in a batched fashion.
 train_dataset = raw_train_stream.map(tokenize_function, batched=True)
 
@@ -141,11 +174,12 @@ training_args = TrainingArguments(
     num_train_epochs=num_train_epochs,
     max_steps=total_training_steps,  # explicitly stop training after these many steps
     per_device_train_batch_size=per_device_train_batch_size,
-    per_device_eval_batch_size=per_device_train_batch_size // 2,
+    per_device_eval_batch_size=per_device_eval_batch_size,
     gradient_accumulation_steps=gradient_accumulation_steps,
     eval_strategy="steps",
     eval_steps=1000,
-    logging_steps=100,
+    eval_accumulation_steps=eval_accumulation_steps,
+    logging_steps=50,
     logging_first_step=True,
     learning_rate=learning_rate,
     warmup_steps=int(0.1 * total_training_steps),
@@ -166,13 +200,14 @@ def compute_metrics(eval_pred):
     shift_logits = logits[:, :-1, :].contiguous()
     shift_labels = labels[:, 1:].contiguous()
     
-    loss_fct = torch.nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
+    # Set ignore_index to -100 to match the labels produced by the data collator.
+    loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
     loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
     perplexity = math.exp(loss.item()) if loss.item() < 20 else float("inf")
     return {"eval_loss": loss.item(), "perplexity": perplexity}
 
 # ========= Initialize Trainer ========= #
-trainer = Trainer(
+trainer = CustomTrainer(
     model=model,
     args=training_args,
     train_dataset=train_dataset,  # streaming training dataset (an iterator)
@@ -184,7 +219,7 @@ trainer = Trainer(
 # ========= Train and Evaluate ========= #
 logging.info("Starting training...")
 trainer.train()
-results = trainer.evaluate()
+results = trainer.evaluate(eval_dataset=test_dataset)
 logging.info("Final Evaluation Results:", results)
 
 # ========= Save the Final Model ========= #
