@@ -80,10 +80,10 @@ class TokenLoggingCallback(TrainerCallback):
 # ========= Hyperparameters and Settings ========= #
 # Standard training settings
 learning_rate = 1e-4
-per_device_train_batch_size = 2
-gradient_accumulation_steps = 16
-per_device_eval_batch_size = 1
-eval_accumulation_steps=2
+per_device_train_batch_size = 4
+gradient_accumulation_steps = 8
+per_device_eval_batch_size = 2
+eval_accumulation_steps=1
 num_train_epochs = 1
 max_seq_length = 1024  # maximum sequence length for the LM
 
@@ -134,7 +134,7 @@ model.to(device)
 num_params = sum(p.numel() for p in model.parameters())
 logging.info(f"Number of parameters: {num_params}")
 
-# ========= Load and Preprocess the RedPajama Dataset ========= #
+# ========= Load and Preprocess the FineWeb-Edu Dataset ========= #
 logging.info("Loading FineWeb-Edu dataset...")
 
 # Define how many examples to use for evaluation.
@@ -177,8 +177,9 @@ train_dataset = raw_train_stream.map(tokenize_function, batched=True)
 data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
 # ========= Set Total Training Steps ========= #
-max_training_examples = int(300e9 / 1024)
-logging.info(f"Setting max_training_examples to {max_training_examples} documents to target ~300B tokens.")
+target_tokens = 10e9  # 10 billion tokens
+max_training_examples = int(target_tokens / max_seq_length)
+logging.info(f"Setting max_training_examples to {max_training_examples} documents to target ~10B tokens.")
 
 steps_per_epoch = math.ceil(max_training_examples / (per_device_train_batch_size * gradient_accumulation_steps))
 total_training_steps = steps_per_epoch * num_train_epochs
@@ -196,6 +197,7 @@ training_args = TrainingArguments(
     per_device_train_batch_size=per_device_train_batch_size,
     per_device_eval_batch_size=per_device_eval_batch_size,
     gradient_accumulation_steps=gradient_accumulation_steps,
+    fp16=True,
     eval_strategy="steps",
     eval_steps=1000,
     eval_accumulation_steps=eval_accumulation_steps,
@@ -248,7 +250,7 @@ results = trainer.evaluate(eval_dataset=test_dataset)
 logging.info("Final Evaluation Results:", results)
 
 # ========= Save the Final Model ========= #
-trainer.save_model("./gfr_causal_lm_final_redpajama_v2")
+trainer.save_model("./gfr_causal_lm_final_finewebedu_v2")
 wandb.finish()
 
 """
