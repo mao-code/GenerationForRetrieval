@@ -2,19 +2,21 @@ import os
 import math
 import torch
 import wandb
+import argparse
+from datetime import datetime
+import logging
+import numpy as np
+from itertools import islice
+
 from transformers import (
     Trainer,
     TrainingArguments,
     LlamaTokenizer,
     DataCollatorForLanguageModeling,
-    TrainerCallback
+    EarlyStoppingCallback
 )
 from datasets import load_dataset, Dataset
-from datetime import datetime
-import logging
 from sklearn.model_selection import train_test_split
-import numpy as np
-from itertools import islice
 
 from GFR.modeling_GFR import GFRForCausalLM, GFRConfig
 
@@ -36,7 +38,6 @@ class CustomTrainer(Trainer):
     def training_step(self, model, inputs, *args, **kwargs):
         # Count tokens in the batch (ignoring pad tokens)
         token_tensor = inputs["input_ids"]
-        # Count tokens that are not padding tokens
         tokens_in_batch = (token_tensor != self.processing_class.pad_token_id).sum().item()
         self.total_tokens += tokens_in_batch
 
@@ -44,215 +45,206 @@ class CustomTrainer(Trainer):
         return super().training_step(model, inputs, *args, **kwargs)
 
     def train(self, *args, **kwargs):
-        # Run the standard training loop
         output = super().train(*args, **kwargs)
-        # Log the total tokens processed at the end of training
         logging.info(f"Total tokens processed during training: {self.total_tokens}")
-        # If you use wandb or another logger, you can log here as well:
         self.log({"total_tokens_processed": self.total_tokens})
         return output
 
-class TokenLoggingCallback(TrainerCallback):
-    def __init__(self):
-        self.trainer = None
-
-    def set_trainer(self, trainer):
-        # This is normally called during Trainer initialization
-        self.trainer = trainer
-
-    def on_train_begin(self, args, state, control, **kwargs):
-        # Ensure trainer is set; if not, attempt to get it from kwargs.
-        if self.trainer is None:
-            self.trainer = kwargs.get("trainer", None)
-        return control
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        trainer = self.trainer or kwargs.get("trainer")
-        if trainer is None:
-            return control
-
-        logs = logs or {}
-        # Make sure that `total_tokens` exists on your trainer, or add it if needed.
-        logs["tokens_processed"] = getattr(trainer, "total_tokens", None)
-        wandb.log(logs)
-        return control
-
-# ========= Hyperparameters and Settings ========= #
-# Standard training settings
-learning_rate = 1e-4
-per_device_train_batch_size = 4
-gradient_accumulation_steps = 8
-per_device_eval_batch_size = 2
-eval_accumulation_steps=1
-num_train_epochs = 1
-max_seq_length = 1024  # maximum sequence length for the LM
-
-# Wandb settings
-run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-wandb.login(key="your_api_key_here")
-wandb_project = "gfr-pretrain"
-wandb_entity = "your_group_name"
-
-# ========= Initialize Wandb ========= #
-wandb.init(project=wandb_project, entity=wandb_entity, name=run_name, config={
-    "learning_rate": learning_rate,
-    "per_device_train_batch_size": per_device_train_batch_size,
-    "gradient_accumulation_steps": gradient_accumulation_steps,
-    "num_train_epochs": num_train_epochs,
-    "max_seq_length": max_seq_length
-})
-
-# ========= Load Llama Tokenizer ========= #
-# Use Llama's tokenizer from Hugging Face (adjust pretrained model identifier as needed)
-tokenizer = LlamaTokenizer.from_pretrained("huggyllama/llama-7b")
-if tokenizer.pad_token is None:
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-
-# ========= Load Model ========= #
-# Define your model configuration. Adjust the parameters as needed.
-logging.info("Initializing GFR model for pretraining...")
-config = GFRConfig(
-    vocab_size=len(tokenizer),
-    hidden_size=max_seq_length,        
-    intermediate_size=max_seq_length*4,  
-
-    num_attention_heads=16,
-    num_key_value_heads=16,
-    n_mamba_heads=2,
-
-    num_hidden_block=3,
-    num_layers_per_block=8,
-    max_position_embeddings=512,
-
-    pad_token_id=tokenizer.pad_token_id,
-    bos_token_id=tokenizer.bos_token_id,
-    eos_token_id=tokenizer.eos_token_id,
-)
-model = GFRForCausalLM(config)
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model.to(device)
-num_params = sum(p.numel() for p in model.parameters())
-logging.info(f"Number of parameters: {num_params}")
-
-# ========= Load and Preprocess the FineWeb-Edu Dataset ========= #
-logging.info("Loading FineWeb-Edu dataset...")
-
-# Define how many examples to use for evaluation.
-eval_size = 100
-
-# For evaluation, load the dataset in streaming mode and materialize the first eval_size examples.
-raw_eval_stream = load_dataset(
-    "HuggingFaceFW/fineweb-edu", 
-    split="train",
-    streaming=True
-)
-eval_examples = list(islice(raw_eval_stream, eval_size))
-logging.info(f"Loaded {len(eval_examples)} evaluation examples.")
-
-# For training, reload the streaming dataset and skip the first eval_size examples.
-raw_train_stream = load_dataset(
-    "HuggingFaceFW/fineweb-edu", 
-    split="train",
-    streaming=True
-)
-raw_train_stream = raw_train_stream.skip(eval_size)
-
-def tokenize_function(example):
-    # FineWeb-Edu dataset has a "text" field.
-    return tokenizer(example["text"], truncation=True, max_length=max_seq_length)
-
-# Materialize and tokenize the evaluation set.
-eval_dataset = Dataset.from_list(eval_examples)
-eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
-
-val_test_splits = eval_dataset.train_test_split(test_size=0.5, seed=42)
-validation_dataset = val_test_splits["train"]
-test_dataset = val_test_splits["test"]
-
-# Apply tokenization to the streaming training dataset.
-train_dataset = raw_train_stream.map(tokenize_function, batched=True)
-
-# ========= Data Collator for Causal LM ========= #
-# For causal language modeling we do not use masked LM.
-data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-
-# ========= Set Total Training Steps ========= #
-target_tokens = 10e9  # 10 billion tokens
-max_training_examples = int(target_tokens / max_seq_length)
-logging.info(f"Setting max_training_examples to {max_training_examples} documents to target ~10B tokens.")
-
-steps_per_epoch = math.ceil(max_training_examples / (per_device_train_batch_size * gradient_accumulation_steps))
-total_training_steps = steps_per_epoch * num_train_epochs
-print(f"Total training steps (approx): {total_training_steps}")
-
-# Optionally, define warmup steps as a fraction of total steps.
-warmup_steps = int(0.1 * total_training_steps)
-
-# ========= Define Training Arguments ========= #
-training_args = TrainingArguments(
-    output_dir="./gfr_pretrain_finewebedu",
-    overwrite_output_dir=True,
-    num_train_epochs=num_train_epochs,
-    max_steps=total_training_steps,  # training stops after these many steps
-    per_device_train_batch_size=per_device_train_batch_size,
-    per_device_eval_batch_size=per_device_eval_batch_size,
-    gradient_accumulation_steps=gradient_accumulation_steps,
-    fp16=True,
-    eval_strategy="steps",
-    eval_steps=1000,
-    eval_accumulation_steps=eval_accumulation_steps,
-    logging_steps=50,
-    logging_first_step=True,
-    learning_rate=learning_rate,
-    warmup_steps=warmup_steps,
-    save_steps=10000,
-    report_to="wandb",
-    logging_dir="./logs",
-)
-
-# ========= Define a Compute Metrics Function ========= #
-# For evaluation, compute loss and perplexity.
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
-    # Convert from numpy arrays to torch tensors if necessary.
     if isinstance(logits, np.ndarray):
         logits = torch.from_numpy(logits)
         labels = torch.from_numpy(labels)
-    # Shift logits and labels for next-token prediction.
     shift_logits = logits[:, :-1, :].contiguous()
     shift_labels = labels[:, 1:].contiguous()
-    
-    # Set ignore_index to -100 to match the labels produced by the data collator.
     loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
     loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
     perplexity = math.exp(loss.item()) if loss.item() < 20 else float("inf")
     return {"eval_loss": loss.item(), "perplexity": perplexity}
 
-# ========= Initialize Trainer ========= #
-# Instantiate your token logging callback.
-token_logging_callback = TokenLoggingCallback()
+def main():
+    # Training arguments
+    parser = argparse.ArgumentParser(description="Pretrain GFR Model with Custom Arguments")
+    parser.add_argument("--batch_size", type=int, default=4, help="Per-device train batch size")
+    parser.add_argument("--grad_accumulation_steps", type=int, default=8, help="Gradient accumulation steps")
+    parser.add_argument("target_tokens", type=int, default=10e9, help="Target number of tokens to train on (recommended 20x model parameters according to scaling laws)")
+    parser.add_argument("num_train_epochs", type=int, default=1, help="Number of training epochs")
 
-# Initialize the Trainer and pass the callback via the callbacks parameter:
-trainer = CustomTrainer(
-    model=model,
-    args=training_args,
-    train_dataset=train_dataset,
-    eval_dataset=eval_dataset,
-    data_collator=data_collator,
-    compute_metrics=compute_metrics,
-    callbacks=[token_logging_callback]
-)
+    # Evaluation arguments
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=2, help="Per-device evaluation batch size")
+    parser.add_argument("--eval_accumulation_steps", type=int, default=1, help="Evaluation accumulation steps")
+    parser.add_argument("--eval_size", type=int, default=100, help="Number of examples to use for evaluation")
 
-# ========= Train and Evaluate ========= #
-logging.info("Starting training...")
-trainer.train()
-results = trainer.evaluate(eval_dataset=test_dataset)
-logging.info("Final Evaluation Results:", results)
+    # Model arguments
+    parser.add_argument("--max_seq_length", type=int, default=1024, help="Maximum sequence length for the LM")
+    parser.add_argument("--num_blocks", type=int, default=3, help="Number of hidden blocks in the model")
 
-# ========= Save the Final Model ========= #
-trainer.save_model("./gfr_causal_lm_final_finewebedu_v2")
-wandb.finish()
+    # Logging and output arguments
+    parser.add_argument("--output_dir", type=str, default="./gfr_pretrain_finewebedu", help="Output directory for model checkpoints")
+    parser.add_argument("--save_model_path", type=str, default="gfr_causal_lm_final_finewebedu_v2", help="Name of the final model to save")
+    parser.add_argument("--run_name", type=str, default="", help="Run name for logging")
+    parser.add_argument("--wandb_project", type=str, default="gfr-pretrain", help="Wandb project name")
+    parser.add_argument("--wandb_entity", type=str, default="your_group_name", help="Wandb entity name")
+    parser.add_argument("--wandb_api_key", type=str, default="your_wandb_api_key", help="Wandb API key for logging")
 
-"""
-python -m script.gfr_pretrain
-"""
+    args = parser.parse_args()
+
+    # ========= Hyperparameters and Settings ========= #
+    learning_rate = 1e-4
+    per_device_train_batch_size = args.batch_size
+    gradient_accumulation_steps = args.grad_accumulation_steps
+    per_device_eval_batch_size = args.per_device_eval_batch_size
+    eval_accumulation_steps = args.eval_accumulation_steps
+    num_train_epochs = args.num_train_epochs
+    max_seq_length = args.max_seq_length
+
+    # Wandb settings
+    now_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_name = args.run_name + "_" + now_datetime
+    wandb_project = args.wandb_project
+    wandb_entity = args.wandb_entity
+
+    # ========= Initialize Wandb ========= #
+    wandb.login(key=args.wandb_api_key)
+    wandb.init(project=wandb_project, entity=wandb_entity, name=run_name, config={
+        "learning_rate": learning_rate,
+        "per_device_train_batch_size": per_device_train_batch_size,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "num_train_epochs": num_train_epochs,
+        "max_seq_length": max_seq_length
+    })
+
+    # ========= Load Llama Tokenizer ========= #
+    tokenizer = LlamaTokenizer.from_pretrained("huggyllama/llama-7b")
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+
+    # ========= Load Model ========= #
+    logging.info("Initializing GFR model for pretraining...")
+    config = GFRConfig(
+        vocab_size=len(tokenizer),
+        hidden_size=max_seq_length,
+        intermediate_size=max_seq_length * 4,
+        num_attention_heads=16,
+        num_key_value_heads=16,
+        n_mamba_heads=2,
+        num_hidden_blocks=args.num_blocks,  # use value from argument parser
+        num_layers_per_block=8,
+        max_position_embeddings=512,
+        pad_token_id=tokenizer.pad_token_id,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+    model = GFRForCausalLM(config)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+    num_params = sum(p.numel() for p in model.parameters())
+    logging.info(f"Number of parameters: {num_params}")
+
+    # ========= Load and Preprocess the RedPajama Dataset ========= #
+    logging.info("Loading FineWeb-Edu dataset...")
+
+    eval_size = args.eval_size
+    raw_eval_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
+    eval_examples = list(islice(raw_eval_stream, eval_size))
+    logging.info(f"Loaded {len(eval_examples)} evaluation examples.")
+
+    raw_train_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
+    raw_train_stream = raw_train_stream.skip(eval_size)
+
+    def tokenize_function(example):
+        return tokenizer(example["text"], truncation=True, max_length=max_seq_length)
+
+    eval_dataset = Dataset.from_list(eval_examples)
+    eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+
+    val_test_splits = eval_dataset.train_test_split(test_size=0.5, seed=42)
+    validation_dataset = val_test_splits["train"]
+    test_dataset = val_test_splits["test"]
+
+    train_dataset = raw_train_stream.map(tokenize_function, batched=True)
+
+    # ========= Data Collator for Causal LM ========= #
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
+    # ========= Set Total Training Steps ========= #
+    target_tokens = args.target_tokens
+    max_training_examples = int(target_tokens / max_seq_length)
+    logging.info(f"Setting max_training_examples to {max_training_examples} documents to target {target_tokens} tokens.")
+
+    steps_per_epoch = math.ceil(max_training_examples / (per_device_train_batch_size * gradient_accumulation_steps))
+    total_training_steps = steps_per_epoch * num_train_epochs
+    logging.info(f"Total training steps (approx): {total_training_steps}")
+
+    warmup_steps = int(0.1 * total_training_steps)
+
+    # ========= Define Training Arguments ========= #
+    training_args = TrainingArguments(
+        output_dir=args.output_dir,
+        overwrite_output_dir=True,
+        num_train_epochs=num_train_epochs,
+        max_steps=total_training_steps,
+        per_device_train_batch_size=per_device_train_batch_size,
+        per_device_eval_batch_size=per_device_eval_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        fp16=True,
+        eval_strategy="steps",
+        eval_steps=1000,
+        eval_accumulation_steps=eval_accumulation_steps,
+        logging_steps=50,
+        logging_first_step=True,
+        learning_rate=learning_rate,
+        warmup_steps=warmup_steps,
+        save_steps=10000,
+        report_to="wandb",
+        logging_dir="./logs",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+    )
+
+    # ========= Initialize Trainer ========= #
+    trainer = CustomTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        data_collator=data_collator,
+        compute_metrics=compute_metrics,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)]
+    )
+
+    # ========= Train and Evaluate ========= #
+    logging.info("Starting training...")
+    trainer.train()
+    results = trainer.evaluate(eval_dataset=test_dataset)
+    logging.info("Final Evaluation Results: %s", results)
+
+    # ========= Save the Final Model ========= #
+    trainer.save_model(args.save_model_path)
+    wandb.finish()
+
+if __name__ == "__main__":
+    main()
+
+    """
+    python -m script.gfr_pretrain \
+        --batch_size 4 \
+        --grad_accumulation_steps 8 \
+        --target_tokens 1000000000 \
+        --num_train_epochs 1 \
+        
+        --per_device_eval_batch_size 2 \
+        --eval_accumulation_steps 1 \
+        --eval_size 100 \
+        
+        --max_seq_length 1024 \
+        --num_blocks 3 \
+        
+        --output_dir ./gfr_pretrain_finewebedu \
+        --save_model_path gfr_causal_lm_final_finewebedu_v2 \
+        --run_name "fineweb10B_model500M" \
+        --wandb_project gfr-pretrain \
+        --wandb_entity your_group_name \
+        --wandb_api_key your_wandb_api_key 
+    """
