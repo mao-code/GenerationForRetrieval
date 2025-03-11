@@ -13,7 +13,8 @@ from transformers import (
     TrainingArguments,
     LlamaTokenizer,
     DataCollatorForLanguageModeling,
-    EarlyStoppingCallback
+    EarlyStoppingCallback,
+    TrainerCallback
 )
 from datasets import load_dataset, Dataset
 from sklearn.model_selection import train_test_split
@@ -61,6 +62,45 @@ def compute_metrics(eval_pred):
     loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
     perplexity = math.exp(loss.item()) if loss.item() < 20 else float("inf")
     return {"eval_loss": loss.item(), "perplexity": perplexity}
+
+class QualitativeGenerationCallback(TrainerCallback):
+    def __init__(self, tokenizer, prompts=None, max_length=50):
+        # If no custom prompts are provided, use these 10 examples:
+        if prompts is None:
+            prompts = [
+                "The meaning of life is",
+                "Once upon a time in a distant land",
+                "In the future, artificial intelligence will",
+                "The secret to success is",
+                "In a shocking discovery, scientists found",
+                "Deep in the forest, an ancient secret was hidden",
+                "The history of the universe began when",
+                "The best way to solve a problem is",
+                "A mysterious event occurred when",
+                "In the year 3000, humans will"
+            ]
+        self.prompts = prompts
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def on_evaluate(self, args, state, control, model=None, **kwargs):
+        # Tokenize the prompts and move them to the model's device.
+        inputs = self.tokenizer(self.prompts, return_tensors="pt", padding=True)
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+        # Generate outputs using the model's generate() method.
+        outputs = model.generate(**inputs, max_length=self.max_length, do_sample=True)
+        # Decode the outputs to human-readable text.
+        decoded_outputs = [self.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
+
+        # Log the qualitative outputs to wandb along with the current training step.
+        import wandb
+        wandb.log({"qualitative_outputs": decoded_outputs, "step": state.global_step})
+
+        # Also print the outputs for immediate feedback.
+        print("Qualitative Generation Outputs:")
+        for prompt, generated in zip(self.prompts, decoded_outputs):
+            print(f"Prompt: {prompt}\nGenerated: {generated}\n")
 
 def main():
     # Training arguments
@@ -219,6 +259,8 @@ def main():
     )
 
     # ========= Initialize Trainer ========= #
+    qualitative_callback = QualitativeGenerationCallback(tokenizer=tokenizer, max_length=50)
+
     trainer = CustomTrainer(
         model=model,
         args=training_args,
@@ -226,7 +268,7 @@ def main():
         eval_dataset=validation_dataset,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)]
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=3), qualitative_callback]
     )
 
     # ========= Train and Evaluate ========= #
