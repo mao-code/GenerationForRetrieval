@@ -53,10 +53,27 @@ class CustomTrainer(Trainer):
         return output
 
 class TokenLoggingCallback(TrainerCallback):
+    def __init__(self):
+        self.trainer = None
+
+    def set_trainer(self, trainer):
+        # This is normally called during Trainer initialization
+        self.trainer = trainer
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        # Ensure trainer is set; if not, attempt to get it from kwargs.
+        if self.trainer is None:
+            self.trainer = kwargs.get("trainer", None)
+        return control
+
     def on_log(self, args, state, control, logs=None, **kwargs):
+        trainer = self.trainer or kwargs.get("trainer")
+        if trainer is None:
+            return control
+
         logs = logs or {}
-        # Include total tokens processed in the logs.
-        logs["tokens_processed"] = kwargs["trainer"].total_tokens
+        # Make sure that `total_tokens` exists on your trainer, or add it if needed.
+        logs["tokens_processed"] = getattr(trainer, "total_tokens", None)
         wandb.log(logs)
         return control
 
@@ -210,15 +227,19 @@ def compute_metrics(eval_pred):
     return {"eval_loss": loss.item(), "perplexity": perplexity}
 
 # ========= Initialize Trainer ========= #
+# Instantiate your token logging callback.
+token_logging_callback = TokenLoggingCallback()
+
+# Initialize the Trainer and pass the callback via the callbacks parameter:
 trainer = CustomTrainer(
     model=model,
     args=training_args,
-    train_dataset=train_dataset,  # streaming training dataset (an iterator)
-    eval_dataset=eval_dataset,    # materialized evaluation dataset
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
     data_collator=data_collator,
     compute_metrics=compute_metrics,
+    callbacks=[token_logging_callback]
 )
-trainer.add_callback(TokenLoggingCallback())
 
 # ========= Train and Evaluate ========= #
 logging.info("Starting training...")
