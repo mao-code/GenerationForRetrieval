@@ -141,28 +141,43 @@ def main():
     num_params = sum(p.numel() for p in model.parameters())
     logging.info(f"Number of parameters: {num_params}")
 
-    # ========= Load and Preprocess the RedPajama Dataset ========= #
+    # ========= Load and Preprocess the FineWeb-Edu Dataset ========= #
     logging.info("Loading FineWeb-Edu dataset...")
+
+    def tokenize_function(example):
+        # Tokenize without truncation
+        return tokenizer(example["text"])
+    def group_texts(examples):
+        # Concatenate all token lists.
+        concatenated = {k: sum(examples[k], []) for k in examples.keys()}
+        total_length = len(concatenated[list(examples.keys())[0]])
+        # Drop the last chunk if it's smaller than max_seq_length.
+        total_length = (total_length // max_seq_length) * max_seq_length
+        # Split by chunks of max_seq_length.
+        result = {
+            k: [concatenated[k][i: i + max_seq_length] for i in range(0, total_length, max_seq_length)]
+            for k in concatenated.keys()
+        }
+        return result
 
     eval_size = args.eval_size
     raw_eval_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
     eval_examples = list(islice(raw_eval_stream, eval_size))
     logging.info(f"Loaded {len(eval_examples)} evaluation examples.")
 
-    raw_train_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
-    raw_train_stream = raw_train_stream.skip(eval_size)
-
-    def tokenize_function(example):
-        return tokenizer(example["text"], truncation=True, max_length=max_seq_length)
-
     eval_dataset = Dataset.from_list(eval_examples)
     eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+    eval_dataset = eval_dataset.map(group_texts, batched=True)
 
     val_test_splits = eval_dataset.train_test_split(test_size=0.5, seed=42)
     validation_dataset = val_test_splits["train"]
     test_dataset = val_test_splits["test"]
 
-    train_dataset = raw_train_stream.map(tokenize_function, batched=True)
+    raw_train_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
+    raw_train_stream = raw_train_stream.skip(eval_size)
+
+    train_dataset = raw_train_stream.map(tokenize_function, batched=True, remove_columns=["text"])
+    train_dataset = train_dataset.map(group_texts, batched=True)
 
     # ========= Data Collator for Causal LM ========= #
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -208,7 +223,7 @@ def main():
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        eval_dataset=validation_dataset,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=3)]

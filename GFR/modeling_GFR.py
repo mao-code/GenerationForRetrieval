@@ -241,21 +241,10 @@ def eager_attention_forward(
 
 class GFRAttention(nn.Module):
     """
-    Multi-headed attention from 'Attention Is All You Need' paper. Modified to use sliding window attention: Longformer
-    and "Generating Long Sequences with Sparse Transformers".
-
-    # Conver it to the original dimension
-    1. The configuration changed
-    2. from self.scaling = (self.head_dim / 2) ** -0.5 to self.scaling = (self.head_dim) ** -0.5
+    Multi-headed attention from 'Attention Is All You Need' paper. 
+    Modified to use sliding window attention: Longformer and "Generating Long Sequences with Sparse Transformers". (This feature will be activated only if you provide a `attention_mask`. If not, it will default to the standard multi-head attention.)
     
-    OLD:
-    Adapted from transformers.models.mistral.modeling_mistral.MistralAttention:
-    The input dimension here is attention_hidden_size = 2 * hidden_size, and head_dim = attention_hidden_size // num_heads.
-    The extra factor of 2 comes from the input being the concatenation of original_hidden_states with the output of the previous (mamba) layer
-    (see fig. 2 in https://arxiv.org/pdf/2405.16712).
-    Additionally, replaced
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim) with
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim/2)
+    Adapted from transformers.models.mistral.modeling_mistral.MistralAttention
     """
 
     def __init__(self, config: GFRConfig, layer_idx: int, concat_input: Optional[bool] = False):
@@ -1380,7 +1369,7 @@ class GFRModel(GFRPreTrainedModel):
 
         return causal_mask
 
-class GFRForCausalLM(GFRPreTrainedModel):
+class GFRForCausalLM(GFRPreTrainedModel, GenerationMixin):
     """
     GFR model with a causal language modeling head.
     
