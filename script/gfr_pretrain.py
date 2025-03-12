@@ -107,9 +107,9 @@ class QualitativeGenerationCallback(TrainerCallback):
         wandb.log({"qualitative_outputs": decoded_outputs}, step=state.global_step)
 
         # Also print the outputs for immediate feedback.
-        logging.log("Qualitative Generation Outputs:")
+        logging.info("Qualitative Generation Outputs:")
         for prompt, generated in zip(self.prompts, decoded_outputs):
-            logging.log(f"Prompt: {prompt}\nGenerated: {generated}\n")
+            logging.info(f"Prompt: {prompt}\nGenerated: {generated}\n")
 
 def main():
     # Training arguments
