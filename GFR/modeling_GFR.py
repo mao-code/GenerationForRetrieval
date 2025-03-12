@@ -131,7 +131,6 @@ class GFRHybridDynamicCache(DynamicCache):
 
     def __init__(self, config, batch_size, dtype=torch.float16, device=None):
         self.dtype = dtype
-        self.layers_block_type = config.layers_block_type
         self.has_previous_state = False  # only used by mamba
         self.intermediate_size = config.mamba_expand * config.hidden_size
         self.ssm_state_size = config.mamba_d_state
@@ -139,22 +138,26 @@ class GFRHybridDynamicCache(DynamicCache):
         self.n_mamba_heads = config.n_mamba_heads
         self.conv_states = []
         self.ssm_states = []
-        self.transformer_layers = []
+        self.transformer_layers = [] # Will hold indices of transformer (attention) layers.
         self._modules = {}
         self._parameters = {}
         self._buffers = {}
+
+        # Loop over all hidden layers.
         for i in range(config.num_hidden_layers):
-            self.conv_states += [
+            self.conv_states.append(
                 torch.zeros(batch_size, self.intermediate_size, self.conv_kernel_size, device=device, dtype=dtype)
-            ]
+            )
             cache_shape = (
                 batch_size,
                 self.n_mamba_heads,
                 self.intermediate_size // self.n_mamba_heads,
                 self.ssm_state_size,
             )
-            self.ssm_states += [torch.zeros(cache_shape, device=device, dtype=dtype)]
-            if self.layers_block_type[i] == "hybrid":
+            self.ssm_states.append(torch.zeros(cache_shape, device=device, dtype=dtype))
+            # Mark transformer layers based on the block structure.
+            # In our model, transformer layers are at positions 0 and 4 in each block.
+            if i % config.num_layers_per_block in [0, 4]:
                 self.transformer_layers.append(i)
 
         self.key_cache = [torch.tensor([[]] * batch_size, device=device) for _ in range(config.num_hidden_layers)]
@@ -428,7 +431,7 @@ class GFRMambaMixer(nn.Module):
         if use_precomputed_states:
             hidden_states = causal_conv1d_update(
                 hidden_states.squeeze(-1),
-                cache_params.conv_states[self.layer_idx],
+                cache_params.conv_states[self.layer_idx].to(hidden_states.dtype),
                 conv_weights,
                 self.conv1d.bias,
                 self.activation,
@@ -1403,7 +1406,8 @@ class GFRForCausalLM(GFRPreTrainedModel, GenerationMixin):
 
     def get_decoder(self):
         return self.model
-
+    
+    @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")   
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -1460,6 +1464,72 @@ class GFRForCausalLM(GFRPreTrainedModel, GenerationMixin):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+    
+    def prepare_inputs_for_generation(
+        self,
+        input_ids,
+        past_key_values=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        cache_position=None,
+        position_ids=None,
+        use_cache=True,
+        **kwargs,
+    ):
+        # Overwitten -- has a unique cache type, `GFRHybridDynamicCache`
+
+        empty_past_kv = past_key_values is None
+
+        # Omit tokens covered by past_key_values
+        if not empty_past_kv:
+            # If we have cache: let's slice `input_ids` through `cache_position`, to keep only the unprocessed tokens
+            # Exception 1: when passing input_embeds, input_ids may be missing entries
+            # Exception 2: some generation methods do special slicing of input_ids, so we don't need to do it here
+            # Exception 3: with synced GPUs cache_position may go out of bounds, but we only want dummy token in that case.
+            #              (we can't check exception 3 while compiling)
+            if (
+                inputs_embeds is not None  # Exception 1
+                or (is_torchdynamo_compiling() or cache_position[-1] >= input_ids.shape[1])  # Exception 3
+            ):
+                input_ids = input_ids[:, -cache_position.shape[0] :]
+            elif input_ids.shape[1] != cache_position.shape[0]:  # Default case (the "else", a no op, is Exception 2)
+                input_ids = input_ids[:, cache_position]
+        else:
+            past_key_values = GFRHybridDynamicCache(
+                self.config, input_ids.shape[0], dtype=self.dtype, device=self.device
+            )
+
+        # If past_key_values is not a GFRHybridDynamicCache, set it forcely
+        if not isinstance(past_key_values, GFRHybridDynamicCache):
+            print("Got a non-GFR cache, set it forcely")
+            past_key_values = GFRHybridDynamicCache(
+                self.config, input_ids.shape[0], dtype=self.dtype, device=self.device
+            )
+
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if not empty_past_kv:
+                position_ids = position_ids[:, -input_ids.shape[1] :]
+
+        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        if inputs_embeds is not None and empty_past_kv:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            model_inputs = {"input_ids": input_ids.contiguous()}  # `contiguous()` needed for compilation use cases
+
+        model_inputs.update(
+            {
+                "position_ids": position_ids,
+                "past_key_values": past_key_values,
+                "use_cache": use_cache,
+                "attention_mask": attention_mask,
+                "logits_to_keep": self.config.num_logits_to_keep,
+                "cache_position": cache_position,
+            }
+        )
+        return model_inputs
 
 class GFRForSequenceScoring(GFRPreTrainedModel):
     """

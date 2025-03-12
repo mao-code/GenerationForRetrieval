@@ -84,23 +84,32 @@ class QualitativeGenerationCallback(TrainerCallback):
         self.max_length = max_length
 
     def on_evaluate(self, args, state, control, model=None, **kwargs):
+        # Unwrap the model if it is wrapped (e.g., DDP or Accelerate wrapper)
+        if hasattr(model, "module"):
+            model = model.module
+
+        # Force the model to full precision (fp32) to ensure consistency.
+        model = model.float()
+
         # Tokenize the prompts and move them to the model's device.
-        inputs = self.tokenizer(self.prompts, return_tensors="pt", padding=True)
+        inputs = self.tokenizer(self.prompts, return_tensors="pt", padding=True, truncation=True)
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-        # Generate outputs using the model's generate() method.
-        outputs = model.generate(**inputs, max_length=self.max_length, do_sample=True)
+        # Disable autocast to ensure consistent dtypes during generation
+        with torch.no_grad():
+            with torch.amp.autocast('cuda', enabled=False):
+                outputs = model.generate(**inputs, max_length=self.max_length, use_cache=True)
+
         # Decode the outputs to human-readable text.
         decoded_outputs = [self.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
 
         # Log the qualitative outputs to wandb along with the current training step.
-        import wandb
-        wandb.log({"qualitative_outputs": decoded_outputs, "step": state.global_step})
+        wandb.log({"qualitative_outputs": decoded_outputs}, step=state.global_step)
 
         # Also print the outputs for immediate feedback.
-        print("Qualitative Generation Outputs:")
+        logging.log("Qualitative Generation Outputs:")
         for prompt, generated in zip(self.prompts, decoded_outputs):
-            print(f"Prompt: {prompt}\nGenerated: {generated}\n")
+            logging.log(f"Prompt: {prompt}\nGenerated: {generated}\n")
 
 def main():
     # Training arguments
@@ -156,6 +165,7 @@ def main():
 
     # ========= Load Llama Tokenizer ========= #
     tokenizer = LlamaTokenizer.from_pretrained("huggyllama/llama-7b")
+    tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
@@ -301,4 +311,21 @@ if __name__ == "__main__":
         --wandb_project gfr-pretrain \
         --wandb_entity your_group_name \
         --wandb_api_key your_wandb_api_key 
+
+    python -m script.gfr_pretrain \
+        --batch_size 16 \
+        --grad_accumulation_steps 2 \
+        --target_tokens 4000000000 \
+        --num_train_epochs 1 \
+        --per_device_eval_batch_size 2 \
+        --eval_accumulation_steps 1 \
+        --eval_size 100 \
+        --max_seq_length 1024 \
+        --num_blocks 1 \
+        --output_dir ./gfr_pretrain_finewebedu_200m \
+        --save_model_path gfr_causal_lm_final_finewebedu_v2_200m \
+        --run_name "fineweb4B_model200M" \
+        --wandb_project gfr-pretrain \
+        --wandb_entity nlp-maocode \
+        --wandb_api_key c024ab583d4aab78b0ca7f9329635c7843aea5e2 
     """
