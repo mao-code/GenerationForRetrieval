@@ -107,8 +107,8 @@ def main():
     parser = argparse.ArgumentParser(description="Pretrain GFR Model with Custom Arguments")
     parser.add_argument("--batch_size", type=int, default=4, help="Per-device train batch size")
     parser.add_argument("--grad_accumulation_steps", type=int, default=8, help="Gradient accumulation steps")
-    parser.add_argument("target_tokens", type=int, default=10e9, help="Target number of tokens to train on (recommended 20x model parameters according to scaling laws)")
-    parser.add_argument("num_train_epochs", type=int, default=1, help="Number of training epochs")
+    parser.add_argument("--target_tokens", type=int, default=10e9, help="Target number of tokens to train on (recommended 20x model parameters according to scaling laws)")
+    parser.add_argument("--num_train_epochs", type=int, default=1, help="Number of training epochs")
 
     # Evaluation arguments
     parser.add_argument("--per_device_eval_batch_size", type=int, default=2, help="Per-device evaluation batch size")
@@ -184,30 +184,31 @@ def main():
     # ========= Load and Preprocess the FineWeb-Edu Dataset ========= #
     logging.info("Loading FineWeb-Edu dataset...")
 
-    def tokenize_function(example):
-        # Tokenize without truncation
-        return tokenizer(example["text"])
-    def group_texts(examples):
-        # Concatenate all token lists.
-        concatenated = {k: sum(examples[k], []) for k in examples.keys()}
-        total_length = len(concatenated[list(examples.keys())[0]])
-        # Drop the last chunk if it's smaller than max_seq_length.
-        total_length = (total_length // max_seq_length) * max_seq_length
-        # Split by chunks of max_seq_length.
-        result = {
-            k: [concatenated[k][i: i + max_seq_length] for i in range(0, total_length, max_seq_length)]
-            for k in concatenated.keys()
-        }
-        return result
+    # Copied from https://huggingface.co/learn/nlp-course/chapter7/6?fw=pt
+    def tokenize_function(element):
+        outputs = tokenizer(
+            element["text"],
+            truncation=True,
+            max_length=max_seq_length,
+            return_overflowing_tokens=True,
+            return_length=True,
+        )
 
+        input_batch = [] # chunked input_ids
+        attn_batch = []
+        for length, input_ids, attention_mask in zip(outputs["length"], outputs["input_ids"], outputs["attention_mask"]):
+            if length == max_seq_length:
+                input_batch.append(input_ids)
+                attn_batch.append(attention_mask)
+        return {"input_ids": input_batch, "attention_mask": attn_batch}
+    
     eval_size = args.eval_size
     raw_eval_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
     eval_examples = list(islice(raw_eval_stream, eval_size))
     logging.info(f"Loaded {len(eval_examples)} evaluation examples.")
 
     eval_dataset = Dataset.from_list(eval_examples)
-    eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
-    eval_dataset = eval_dataset.map(group_texts, batched=True)
+    eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=raw_eval_stream.column_names)
 
     val_test_splits = eval_dataset.train_test_split(test_size=0.5, seed=42)
     validation_dataset = val_test_splits["train"]
@@ -216,8 +217,7 @@ def main():
     raw_train_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
     raw_train_stream = raw_train_stream.skip(eval_size)
 
-    train_dataset = raw_train_stream.map(tokenize_function, batched=True, remove_columns=["text"])
-    train_dataset = train_dataset.map(group_texts, batched=True)
+    train_dataset = raw_train_stream.map(tokenize_function, batched=True, remove_columns=raw_train_stream.column_names)
 
     # ========= Data Collator for Causal LM ========= #
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -288,16 +288,13 @@ if __name__ == "__main__":
     python -m script.gfr_pretrain \
         --batch_size 4 \
         --grad_accumulation_steps 8 \
-        --target_tokens 1000000000 \
+        --target_tokens 10000000000 \
         --num_train_epochs 1 \
-        
         --per_device_eval_batch_size 2 \
         --eval_accumulation_steps 1 \
         --eval_size 100 \
-        
         --max_seq_length 1024 \
         --num_blocks 3 \
-        
         --output_dir ./gfr_pretrain_finewebedu \
         --save_model_path gfr_causal_lm_final_finewebedu_v2 \
         --run_name "fineweb10B_model500M" \
