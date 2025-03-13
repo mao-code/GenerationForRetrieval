@@ -195,6 +195,7 @@ def main():
     logging.info("Loading FineWeb-Edu dataset...")
 
     # Copied from https://huggingface.co/learn/nlp-course/chapter7/6?fw=pt
+    # Old version and can lead to waste of tokens
     def tokenize_function(element):
         outputs = tokenizer(
             element["text"],
@@ -212,13 +213,40 @@ def main():
                 attn_batch.append(attention_mask)
         return {"input_ids": input_batch, "attention_mask": attn_batch}
     
+    # New version to avoid wasting tokens (according to the recommendation from HuggingFace)
+    def tokenize_and_chunk_function(batch):
+        """
+        Tokenizes a batch of texts by concatenating them with an eos token in between,
+        then chunks the concatenated token list into segments of fixed length (max_seq_length).
+        """
+        # List to hold all token IDs
+        all_tokens = []
+        
+        # Process each example in the batch:
+        # 1. Tokenize without truncation or padding to get the full sequence.
+        # 2. Append the tokens and an eos token id at the end.
+        for text in batch["text"]:
+            tokens = tokenizer(text, truncation=False, padding=False)['input_ids']
+            all_tokens.extend(tokens + [tokenizer.eos_token_id])
+        
+        # Compute how many tokens we can use to form full chunks of size `max_seq_length`
+        total_length = (len(all_tokens) // max_seq_length) * max_seq_length
+        
+        # Split the tokens into chunks of `max_seq_length`
+        input_ids = [all_tokens[i: i + max_seq_length] for i in range(0, total_length, max_seq_length)]
+        
+        # Create an attention mask (all ones, since there is no padding in these full chunks)
+        attention_masks = [[1] * max_seq_length for _ in input_ids]
+        
+        return {"input_ids": input_ids, "attention_mask": attention_masks}
+    
     eval_size = args.eval_size
     raw_eval_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
     eval_examples = list(islice(raw_eval_stream, eval_size))
     logging.info(f"Loaded {len(eval_examples)} evaluation examples.")
 
     eval_dataset = Dataset.from_list(eval_examples)
-    eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=raw_eval_stream.column_names)
+    eval_dataset = eval_dataset.map(tokenize_and_chunk_function, batched=True, remove_columns=raw_eval_stream.column_names)
 
     val_test_splits = eval_dataset.train_test_split(test_size=0.5, seed=42)
     validation_dataset = val_test_splits["train"]
@@ -227,7 +255,7 @@ def main():
     raw_train_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
     raw_train_stream = raw_train_stream.skip(eval_size)
 
-    train_dataset = raw_train_stream.map(tokenize_function, batched=True, remove_columns=raw_train_stream.column_names)
+    train_dataset = raw_train_stream.map(tokenize_and_chunk_function, batched=True, remove_columns=raw_train_stream.column_names)
 
     # ========= Data Collator for Causal LM ========= #
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
