@@ -173,14 +173,14 @@ def main():
     logging.info("Initializing GFR model for pretraining...")
     config = GFRConfig(
         vocab_size=len(tokenizer),
-        hidden_size=max_seq_length,
-        intermediate_size=max_seq_length * 4,
+        hidden_size=1024,
+        intermediate_size=1024 * 4,
         num_attention_heads=16,
         num_key_value_heads=16,
         n_mamba_heads=2,
         num_hidden_blocks=args.num_blocks,  # use value from argument parser
         num_layers_per_block=8,
-        max_position_embeddings=512,
+        max_position_embeddings=1024, # no real effect
         pad_token_id=tokenizer.pad_token_id,
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,

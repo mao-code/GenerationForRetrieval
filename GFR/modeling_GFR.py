@@ -686,7 +686,7 @@ class GFRAttentionDecoderLayer(nn.Module):
         hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
             layer_idx=self.layer_idx,
-            attention_mask=attention_mask,
+            attention_mask=causal_mask, # pass causal mask to attention not padding mask
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
