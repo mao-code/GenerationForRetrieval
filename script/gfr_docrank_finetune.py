@@ -14,6 +14,8 @@ from beir.datasets.data_loader import GenericDataLoader
 from utils import load_dataset, prepare_training_samples, train_one_epoch, evaluate_full_retrieval
 from datetime import datetime
 
+# TODO: The imports below are not deprecated. Please wait for the next release.
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs.")

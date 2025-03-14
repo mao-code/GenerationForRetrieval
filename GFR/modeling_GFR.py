@@ -1531,6 +1531,55 @@ class GFRForCausalLM(GFRPreTrainedModel, GenerationMixin):
         )
         return model_inputs
 
+
+class GFRModelWithTokenTypes(GFRModel):
+    def __init__(self, config: "GFRConfig"):
+        super().__init__(config)
+        # Add token type embeddings with a small vocabulary (e.g., 2 types: 0 for document, 1 for query)
+        self.token_type_embeddings = nn.Embedding(2, config.hidden_size)
+        # Initialize the token type embeddings to zeros so that they don't disturb the pre-trained weights initially.
+        nn.init.zeros_(self.token_type_embeddings.weight)
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        token_type_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional["GFRHybridDynamicCache"] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ) -> Union[Tuple, "BaseModelOutputWithPast"]:
+        # If inputs_embeds is not provided, compute them from input_ids.
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)  # (batch, seq_len, hidden_size)
+
+            if token_type_ids is not None:
+                token_type_embeds = self.token_type_embeddings(token_type_ids)
+                inputs_embeds = inputs_embeds + token_type_embeds
+
+        # Call the parent forward method with the modified embeddings.
+        # We pass token_type_ids as None because we already added them.
+        return super().forward(
+            input_ids=input_ids,
+            token_type_ids=None,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            cache_position=cache_position,
+            **kwargs,
+        )
+
 class GFRForSequenceScoring(GFRPreTrainedModel):
     """
     GFR model for sequence scoring.
@@ -1541,9 +1590,12 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
     def __init__(self, config: "GFRConfig"):
         super().__init__(config)
         self.config = config
-        self.gfr = GFRModel(config)
+        self.gfr = GFRModelWithTokenTypes(config)
+
+        self.token_type_embedding = nn.Embedding(2, config.hidden_size)
         # Score head: projects the [CLS] token's hidden state to class logits.
-        self.score_head = nn.Linear(config.hidden_size, 1)
+        self.score_head = nn.Linear(config.hidden_size, 1, bias=False)
+
         self.post_init()
 
     def forward(
@@ -1588,10 +1640,19 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
         cls_token = hidden_states[:, 0, :]
         logits = self.score_head(cls_token)
 
+        # TODO: Calculate the loss (point-wise, pair-wise, list-wise) based on the labels.
+        loss = None
+
         if not return_dict:
             return (logits,)
         else:
-            return logits, outputs
+            return {
+                "loss": loss,
+                "logits": logits,
+                "hidden_states": outputs.hidden_states,
+                "attentions": outputs.attentions,
+                "past_key_values": outputs.past_key_values
+            }
         
     def prepare_input(self, documents: list, queries: list, tokenizer, max_length: int = 1024):
         """
@@ -1638,16 +1699,19 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
             # Pad sequence if necessary.
             pad_length = max_length - len(input_ids)
             if pad_length > 0:
+                # For fine-tuning, we pad to the right.
                 input_ids += [tokenizer.pad_token_id] * pad_length
                 token_type_ids += [0] * pad_length
             
             input_ids_list.append(input_ids)
             token_type_ids_list.append(token_type_ids)
+            attention_mask = [1] * len(input_ids[:max_length - pad_length]) + [0] * pad_length
         
         # Convert lists to tensors with shape (batch_size, max_length).
         input_ids_tensor = torch.tensor(input_ids_list, dtype=torch.long)
         token_type_ids_tensor = torch.tensor(token_type_ids_list, dtype=torch.long)
+        attention_mask_tensor = torch.tensor(attention_mask, dtype=torch.long)
         
-        return input_ids_tensor, token_type_ids_tensor
+        return input_ids_tensor, token_type_ids_tensor, attention_mask_tensor
 
-__all__ = ["GFRPreTrainedModel", "GFRModel", "GFRForCausalLM", "GFRForSequenceScoring"]
+__all__ = ["GFRPreTrainedModel", "GFRModel", "GFRForCausalLM", "GFRModelWithTokenTypes", "GFRForSequenceScoring"]
