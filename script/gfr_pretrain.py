@@ -132,7 +132,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default="./gfr_pretrain_finewebedu", help="Output directory for model checkpoints")
     parser.add_argument("--save_model_path", type=str, default="gfr_causal_lm_final_finewebedu_v2", help="Name of the final model to save")
     parser.add_argument("--run_name", type=str, default="", help="Run name for logging")
-    parser.add_argument("--wandb_project", type=str, default="gfr-pretrain", help="Wandb project name")
+    parser.add_argument("--wandb_project", type=str, default="gfr_pretrain_causallm", help="Wandb project name")
     parser.add_argument("--wandb_entity", type=str, default="your_group_name", help="Wandb entity name")
     parser.add_argument("--wandb_api_key", type=str, default="your_wandb_api_key", help="Wandb API key for logging")
 
@@ -318,7 +318,7 @@ if __name__ == "__main__":
         --output_dir ./gfr_pretrain_finewebedu \
         --save_model_path gfr_pretrain_causal_lm_final_finewebedu_v2 \
         --run_name "fineweb10B_model500M" \
-        --wandb_project gfr-pretrain \
+        --wandb_project gfr_pretrain_causallm \
         --wandb_entity your_group_name \
         --wandb_api_key your_wandb_api_key 
     """
