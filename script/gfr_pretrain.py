@@ -334,7 +334,7 @@ if __name__ == "__main__":
         --max_seq_length 1024 \
         --num_blocks 3 \
         --output_dir ./gfr_pretrain_finewebedu \
-        --save_model_path gfr_causal_lm_final_finewebedu_v2 \
+        --save_model_path gfr_pretrain_causal_lm_final_finewebedu_v2 \
         --run_name "fineweb10B_model500M" \
         --wandb_project gfr-pretrain \
         --wandb_entity your_group_name \

@@ -1566,7 +1566,7 @@ class GFRModelWithTokenTypes(GFRModel):
         # Call the parent forward method with the modified embeddings.
         # We pass token_type_ids as None because we already added them.
         return super().forward(
-            input_ids=input_ids,
+            input_ids=None,
             token_type_ids=None,
             attention_mask=attention_mask,
             position_ids=position_ids,
