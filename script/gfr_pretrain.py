@@ -195,24 +195,6 @@ def main():
     logging.info("Loading FineWeb-Edu dataset...")
 
     # Copied from https://huggingface.co/learn/nlp-course/chapter7/6?fw=pt
-    # Old version and can lead to waste of tokens
-    def tokenize_function(element):
-        outputs = tokenizer(
-            element["text"],
-            truncation=True,
-            max_length=max_seq_length,
-            return_overflowing_tokens=True,
-            return_length=True,
-        )
-
-        input_batch = [] # chunked input_ids
-        attn_batch = []
-        for length, input_ids, attention_mask in zip(outputs["length"], outputs["input_ids"], outputs["attention_mask"]):
-            if length == max_seq_length:
-                input_batch.append(input_ids)
-                attn_batch.append(attention_mask)
-        return {"input_ids": input_batch, "attention_mask": attn_batch}
-    
     # New version to avoid wasting tokens (according to the recommendation from HuggingFace)
     def tokenize_and_chunk_function(batch):
         """
