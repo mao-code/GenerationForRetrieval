@@ -313,6 +313,9 @@ def main():
     model = GFRForSequenceScoring(config)
     # Transfer weights from the pretrained backbone (non-strict to allow extra embeddings).
     model.gfr.load_state_dict(backbone_model.state_dict(), strict=False)
+
+    model.resize_token_embeddings(len(tokenizer))
+    
     model.to(device)
     num_params = sum(p.numel() for p in model.parameters())
     print(f"Number of parameters: {num_params}")
