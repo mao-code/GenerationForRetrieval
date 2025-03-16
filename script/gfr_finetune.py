@@ -65,7 +65,7 @@ def prepare_training_samples(corpus: dict, queries: dict, qrels: dict):
             training_samples.append((query_text, pos_doc_text, neg_doc_text))
     return training_samples
 
-def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, batch_size, epoch, grad_accum_steps=1):
+def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, batch_size, epoch, grad_accum_steps=1, total_epochs=1):
     """
     Performs one epoch of training with gradient accumulation.
     Returns the average loss and the number of optimizer steps (training steps) performed.
@@ -76,6 +76,7 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
     num_batches = len(training_samples) // batch_size + int(len(training_samples) % batch_size > 0)
     local_steps = 0
 
+    trained_samples_num = 0
     pbar = tqdm(range(num_batches), desc=f"Epoch {epoch+1}", unit="batch")
     optimizer.zero_grad()
     for batch_idx in range(num_batches):
@@ -87,19 +88,24 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
         batch_pos_docs = [pos_doc for query, pos_doc, neg_doc in batch]
         batch_neg_docs = [neg_doc for query, pos_doc, neg_doc in batch]
         
-        input_ids_pos, token_type_ids_pos, attention_mask = model.prepare_input(batch_pos_docs, batch_queries, tokenizer)
-        input_ids_neg, token_type_ids_neg, attention_mask = model.prepare_input(batch_neg_docs, batch_queries, tokenizer)
+        input_ids_pos, token_type_ids_pos, attention_mask_pos = model.prepare_input(batch_pos_docs, batch_queries, tokenizer)
+        input_ids_neg, token_type_ids_neg, attention_mask_neg = model.prepare_input(batch_neg_docs, batch_queries, tokenizer)
         
         input_ids_pos = input_ids_pos.to(device)
         token_type_ids_pos = token_type_ids_pos.to(device)
         input_ids_neg = input_ids_neg.to(device)
         token_type_ids_neg = token_type_ids_neg.to(device)
+        attention_mask_pos = attention_mask_pos.to(device)
+        attention_mask_neg = attention_mask_neg.to(device)
         
         # Forward passes.
-        output_pos = model(input_ids=input_ids_pos, token_type_ids=token_type_ids_pos, return_dict=True)
-        output_neg = model(input_ids=input_ids_neg, token_type_ids=token_type_ids_neg, return_dict=True)
+        output_pos = model(input_ids=input_ids_pos, token_type_ids=token_type_ids_pos, attention_mask=attention_mask_pos, return_dict=True)
+        output_neg = model(input_ids=input_ids_neg, token_type_ids=token_type_ids_neg, attention_mask=attention_mask_neg, return_dict=True)
         score_pos = output_pos["logits"]  # shape: (batch, 1)
         score_neg = output_neg["logits"]  # shape: (batch, 1)
+
+        print("Score Pos: ", score_pos)
+        print("Score Neg: ", score_neg)
         
         # Create target tensor for MarginRankingLoss.
         target = torch.ones(score_pos.size(), device=device)
@@ -108,17 +114,23 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
         loss.backward()
         
         total_loss += loss.item() * grad_accum_steps
+
+        grad_norm = sum(p.grad.norm().item() ** 2 for p in model.parameters() if p.grad is not None) ** 0.5
         
         # Perform an optimizer step if accumulated enough mini-batches.
         if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == num_batches:
             optimizer.step()
             optimizer.zero_grad()
             local_steps += 1
+
+        trained_samples_num += len(batch)
         
         wandb.log({
             "iteration_loss": loss.item() * grad_accum_steps,
+            "gradient_norm": grad_norm,
             "epoch": epoch+1,
-            "batch": batch_idx+1
+            "batch": batch_idx,
+            "training_samples_completeness": trained_samples_num / len(training_samples)
         })
         
         pbar.set_postfix(loss=f"{loss.item() * grad_accum_steps:.4f}")
@@ -225,6 +237,7 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
         "Avg_Inference_Time_ms": avg_inference_time_ms,
         "Throughput_docs_per_sec": throughput_docs_per_sec,
     }
+    wandb.log({"eval_metrics": metrics})
     return metrics
 
 def subsample_dev_set(queries_dev: dict, qrels_dev: dict, sample_percentage: float = 0.05):
@@ -299,10 +312,12 @@ def main():
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    if tokenizer.cls_token is None:
-        tokenizer.add_special_tokens({"cls_token": "[CLS]"})
+    # if tokenizer.cls_token is None:
+    #     tokenizer.add_special_tokens({"cls_token": "[CLS]"})
     if tokenizer.sep_token is None:
         tokenizer.add_special_tokens({"sep_token": "[SEP]"})
+    if "[SCORE]" not in tokenizer.get_vocab():
+        tokenizer.add_special_tokens({"additional_special_tokens": ["[SCORE]"]})
 
     # Load pretrained GFRForCausalLM and extract its backbone.
     pretrained_causal_model = GFRForCausalLM.from_pretrained(args.pretrained_checkpoint)
@@ -366,7 +381,7 @@ def main():
         logging.info(f"Starting epoch {epoch+1}")
         epoch_loss, steps_in_epoch = train_one_epoch(
             model, optimizer, loss_fn, training_samples, tokenizer, device,
-            args.per_device_train_batch_size, epoch, args.gradient_accumulation_steps
+            args.per_device_train_batch_size, epoch, args.gradient_accumulation_steps, args.num_train_epochs
         )
         global_step += steps_in_epoch
         logging.info(f"Epoch {epoch+1} training loss: {epoch_loss:.4f}")
@@ -434,8 +449,8 @@ if __name__ == "__main__":
     --per_device_train_batch_size 4 \
     --gradient_accumulation_steps 8 \
     --lr 1e-4 \
-    --sample_dev_percentage 0.01 \
-    --per_device_eval_batch_size 2 \
+    --sample_dev_percentage 0.05 \
+    --per_device_eval_batch_size 4 \
     --eval_accumulation_steps 1 \
     --patience 3 \
     --output_dir ./gfr_finetune_ckpts_200m_msmarco \

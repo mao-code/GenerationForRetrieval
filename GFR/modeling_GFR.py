@@ -1642,9 +1642,20 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
             **kwargs,
         )
         hidden_states = outputs.last_hidden_state  # (batch, seq_len, hidden_size)
-        # Use the first token ([CLS]) for classification.
-        cls_token = hidden_states[:, 0, :]
-        logits = self.score_head(cls_token)
+
+        # Compute the position of [SCORE] for each sequence
+        # Sum of attention_mask gives the unpadded length; [SCORE] is at length - 1
+        score_positions = attention_mask.sum(dim=1) - 1  # Shape: (batch_size,)
+
+        # Ensure positions are within bounds
+        score_positions = torch.clamp(score_positions, min=0, max=hidden_states.size(1) - 1)
+
+        # Extract the hidden state of [SCORE] for each sequence in the batch
+        batch_indices = torch.arange(hidden_states.size(0))  # [0, 1, 2, ..., batch_size-1]
+        score_hidden = hidden_states[batch_indices, score_positions]  # Shape: (batch_size, hidden_size)
+
+        # Pass the [SCORE] hidden state through a scoring head
+        logits = self.score_head(score_hidden)
 
         # TODO: Calculate the loss (point-wise, pair-wise, list-wise) based on the labels.
         loss = None
@@ -1683,10 +1694,11 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
             # Encode document and query without adding special tokens.
             doc_ids = tokenizer.encode(document, add_special_tokens=False)
             query_ids = tokenizer.encode(query, add_special_tokens=False)
+            score_id = tokenizer.convert_tokens_to_ids("[SCORE]")
             
             # Calculate available tokens for the document.
             # Reserve tokens for [CLS] and [SEP] plus the query tokens.
-            reserved_tokens = 2 + len(query_ids)  # 1 for [CLS] and 1 for [SEP]
+            reserved_tokens = 2 + len(query_ids)  # [SEP], [SCORE]
             available_doc_length = max_length - reserved_tokens
             
             if available_doc_length < 0:
@@ -1695,12 +1707,12 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
             # Truncate document tokens if necessary, leaving the query unchanged.
             truncated_doc_ids = doc_ids[:available_doc_length]
             
-            # Build the final input sequence: [CLS] + truncated_doc_ids + [SEP] + query_ids.
-            input_ids = [tokenizer.cls_token_id] + truncated_doc_ids + [tokenizer.sep_token_id] + query_ids
+            # Build the final input sequence: truncated_doc_ids + [SEP] + query_ids + [SCORE].
+            input_ids = truncated_doc_ids + [tokenizer.sep_token_id] + query_ids + [score_id]
             
             # Create token type IDs:
-            # Token type 0 for [CLS], document tokens, and [SEP]; 1 for query tokens.
-            doc_part_length = len(truncated_doc_ids) + 2  # account for [CLS] and [SEP]
+            # Token type 0 for document tokens, and [SEP]; 1 for query tokens and [SCORE].
+            doc_part_length = len(truncated_doc_ids) + 2  # account for [SEP] and [SCORE]
             token_type_ids = [0] * doc_part_length + [1] * len(query_ids)
             
             # Pad sequence if necessary.
