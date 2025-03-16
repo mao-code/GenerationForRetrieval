@@ -1671,6 +1671,7 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
         """
         input_ids_list = []
         token_type_ids_list = []
+        attention_masks_list = []
         
         for document, query in zip(documents, queries):
             # Encode document and query without adding special tokens.
@@ -1702,15 +1703,17 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
                 # For fine-tuning, we pad to the right.
                 input_ids += [tokenizer.pad_token_id] * pad_length
                 token_type_ids += [0] * pad_length
-            
+
+            attention_mask = [1] * len(input_ids[:max_length - pad_length]) + [0] * pad_length
+
             input_ids_list.append(input_ids)
             token_type_ids_list.append(token_type_ids)
-            attention_mask = [1] * len(input_ids[:max_length - pad_length]) + [0] * pad_length
+            attention_masks_list.append(attention_mask)
         
         # Convert lists to tensors with shape (batch_size, max_length).
         input_ids_tensor = torch.tensor(input_ids_list, dtype=torch.long)
         token_type_ids_tensor = torch.tensor(token_type_ids_list, dtype=torch.long)
-        attention_mask_tensor = torch.tensor(attention_mask, dtype=torch.long)
+        attention_mask_tensor = torch.tensor(attention_masks_list, dtype=torch.long)
         
         return input_ids_tensor, token_type_ids_tensor, attention_mask_tensor
 

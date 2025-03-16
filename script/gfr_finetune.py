@@ -32,7 +32,7 @@ logging.basicConfig(
 #############################################
 
 def load_dataset(dataset: str, split: str):
-    out_dir = os.path.join(pathlib.Path(__file__).parent.absolute(), "datasets")
+    out_dir = "datasets"
     data_path = os.path.join(out_dir, dataset)
     if not os.path.exists(data_path):
         print(f"Dataset '{dataset}' not found locally. Downloading...")
@@ -87,10 +87,8 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
         batch_pos_docs = [pos_doc for query, pos_doc, neg_doc in batch]
         batch_neg_docs = [neg_doc for query, pos_doc, neg_doc in batch]
         
-        # Use the model's prepare_input method (from the backbone) to build inputs.
-        base_model = model.module if hasattr(model, "module") else model
-        input_ids_pos, token_type_ids_pos = base_model.prepare_input(batch_pos_docs, batch_queries, tokenizer)
-        input_ids_neg, token_type_ids_neg = base_model.prepare_input(batch_neg_docs, batch_queries, tokenizer)
+        input_ids_pos, token_type_ids_pos, attention_mask = model.prepare_input(batch_pos_docs, batch_queries, tokenizer)
+        input_ids_neg, token_type_ids_neg, attention_mask = model.prepare_input(batch_neg_docs, batch_queries, tokenizer)
         
         input_ids_pos = input_ids_pos.to(device)
         token_type_ids_pos = token_type_ids_pos.to(device)
@@ -259,8 +257,8 @@ def subsample_dev_set(queries_dev: dict, qrels_dev: dict, sample_percentage: flo
 def main():
     parser = argparse.ArgumentParser()
     # Training settings.
-    parser.add_argument("--datasets", type=str, nargs='+', default=["msmarco", "hotpotqa", "nq"],
-                        help="List of datasets to use (e.g., msmarco hotpotqa nq).")
+    parser.add_argument("--datasets", type=str, nargs='+', default=["msmarco", "hotpotqa", "nq-train"],
+                        help="List of datasets to use (e.g., msmarco hotpotqa nq-train nq).")
     parser.add_argument("--pretrained_checkpoint", type=str, required=True,
                         help="Path to the pretrained GFRForCausalLM checkpoint.")
     parser.add_argument("--num_train_epochs", type=int, default=1, help="Number of training epochs.")
@@ -301,6 +299,10 @@ def main():
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    if tokenizer.cls_token is None:
+        tokenizer.add_special_tokens({"cls_token": "[CLS]"})
+    if tokenizer.sep_token is None:
+        tokenizer.add_special_tokens({"sep_token": "[SEP]"})
 
     # Load pretrained GFRForCausalLM and extract its backbone.
     pretrained_causal_model = GFRForCausalLM.from_pretrained(args.pretrained_checkpoint)
@@ -423,18 +425,19 @@ if __name__ == "__main__":
 
     """
     python -m script.gfr_finetune \
-    --datasets msmarco hotpotqa nq \
-    --pretrained_checkpoint ./gfr_pretrain_causal_lm_final_finewebedu_v2 \
+    --datasets msmarco \
+    --pretrained_checkpoint ./gfr_pretrain_causal_lm_final_finewebedu_v2_200m \
     --num_train_epochs 1 \
     --per_device_train_batch_size 4 \
     --gradient_accumulation_steps 8 \
     --lr 1e-4 \
+    --sample_dev_percentage 0.01 \
     --per_device_eval_batch_size 2 \
     --eval_accumulation_steps 1 \
     --patience 3 \
-    --output_dir ./gfr_finetune_ckpts \
-    --save_model_path ./gfr_finetune_final \
-    --run_name 200M \
+    --output_dir ./gfr_finetune_ckpts_200m_msmarco \
+    --save_model_path ./gfr_finetune_final_200m_msmarco \
+    --run_name 200M_msmarco \
     --wandb_project gfr_finetuning_document_ranking \
     --wandb_entity nlp-maocode \
     --wandb_api_key your_wandb_api_key
