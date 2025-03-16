@@ -4,6 +4,7 @@ import logging
 import time
 import random
 from datetime import datetime
+import pathlib
 
 import torch
 import torch.nn as nn
@@ -27,11 +28,10 @@ logging.basicConfig(
 )
 
 #############################################
-# Helper Functions (can be moved to utils.py)
+# Helper Functions
 #############################################
 
 def load_dataset(dataset: str, split: str):
-    import pathlib
     out_dir = os.path.join(pathlib.Path(__file__).parent.absolute(), "datasets")
     data_path = os.path.join(out_dir, dataset)
     if not os.path.exists(data_path):
@@ -229,6 +229,29 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
     }
     return metrics
 
+def subsample_dev_set(queries_dev: dict, qrels_dev: dict, sample_percentage: float = 0.05):
+    """
+    Subsamples the development set by randomly selecting a percentage of queries.
+
+    Args:
+        queries_dev (dict): Dictionary of dev queries {query_id: query_text}.
+        qrels_dev (dict): Dictionary of dev qrels {query_id: {doc_id: relevance, ...}}.
+        sample_percentage (float, optional): Fraction of queries to sample. Default is 0.05 (5%).
+
+    Returns:
+        tuple: A tuple (sampled_queries, sampled_qrels) where:
+            sampled_queries (dict): Subsampled dev queries.
+            sampled_qrels (dict): Corresponding qrels for the subsampled queries.
+    """
+    dev_query_ids = list(queries_dev.keys())
+    num_sample = max(1, int(len(dev_query_ids) * sample_percentage))
+    sampled_ids = random.sample(dev_query_ids, num_sample)
+    
+    sampled_queries = {qid: queries_dev[qid] for qid in sampled_ids}
+    sampled_qrels = {qid: qrels_dev[qid] for qid in sampled_ids if qid in qrels_dev}
+    
+    return sampled_queries, sampled_qrels
+
 #############################################
 # Main Finetuning Script
 #############################################
@@ -236,7 +259,7 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
 def main():
     parser = argparse.ArgumentParser()
     # Training settings.
-    parser.add_argument("--datasets", type=str, nargs='+', default=["msmarco", "hotpotqa"],
+    parser.add_argument("--datasets", type=str, nargs='+', default=["msmarco", "hotpotqa", "nq"],
                         help="List of datasets to use (e.g., msmarco hotpotqa nq).")
     parser.add_argument("--pretrained_checkpoint", type=str, required=True,
                         help="Path to the pretrained GFRForCausalLM checkpoint.")
@@ -244,9 +267,13 @@ def main():
     parser.add_argument("--per_device_train_batch_size", type=int, default=4, help="Training batch size.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Number of gradient accumulation steps.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
+    
     # Evaluation settings.
+    parser.add_argument("--sample_dev_percentage", type=float, default=0.05, help="Percentage of dev queries to sample for evaluation")
     parser.add_argument("--per_device_eval_batch_size", type=int, default=2, help="Per-device evaluation batch size")
     parser.add_argument("--eval_accumulation_steps", type=int, default=1, help="Evaluation accumulation steps")
+    parser.add_argument("--patience", type=int, default=3, help="Number of epochs to wait for improvement before early stopping")
+
     # Logging and checkpointing.
     parser.add_argument("--output_dir", type=str, default="./gfr_finetune_ckpts", help="Output directory for model checkpoints")
     parser.add_argument("--save_model_path", type=str, default="gfr_finetune_final", help="Directory to save the final best model")
@@ -300,26 +327,35 @@ def main():
         logging.info(f"Loading dataset: {dataset} (train split)")
         corpus_train, queries_train, qrels_train = load_dataset(dataset, split="train")
         training_samples.extend(prepare_training_samples(corpus_train, queries_train, qrels_train))
+        
         logging.info(f"Loading dataset: {dataset} (dev split)")
         corpus_dev, queries_dev, qrels_dev = load_dataset(dataset, split="dev")
         dev_data[dataset] = (corpus_dev, queries_dev, qrels_dev)
+        
         logging.info(f"Loading dataset: {dataset} (test split)")
         corpus_test, queries_test, qrels_test = load_dataset(dataset, split="test")
         test_data[dataset] = (corpus_test, queries_test, qrels_test)
 
+    logging.info(f"Total training samples: {len(training_samples)}")
+
+    # Subsample the dev set
+    sampled_queries_dev, sampled_qrels_dev = subsample_dev_set(queries_dev, qrels_dev, sample_percentage=args.sample_dev_percentage)
+
     for dataset in args.datasets:
-        logging.info(f"Dataset {dataset} dev queries: {len(dev_data[dataset][1])}")
+        logging.info(f"Dataset {dataset} dev queries: {len(dev_data[dataset][1])}", 
+        logging.info(f"Sampled dev queries: {len(sampled_queries_dev)}"))
         logging.info(f"Dataset {dataset} test queries: {len(test_data[dataset][1])}")
 
     checkpoint_dir = args.output_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # Training loop variables.
+    # Early stopping and checkpoint variables.
     global_step = 0
     checkpoint_interval = 10000  # save a checkpoint every 10k training steps
-    best_metric = -float("inf")    # for example, best NDCG@10
+    best_metric = -float("inf")    # example: best NDCG@10
     best_model_dir = os.path.join(checkpoint_dir, "best_model")
     os.makedirs(best_model_dir, exist_ok=True)
+    wait = 0  # counter for early stopping
 
     for epoch in range(args.num_train_epochs):
         logging.info(f"Starting epoch {epoch+1}")
@@ -334,7 +370,7 @@ def main():
         # Evaluate on each dev dataset.
         for dataset, (corpus_dev, queries_dev, qrels_dev) in dev_data.items():
             dev_metrics = evaluate_full_retrieval(
-                model, corpus_dev, queries_dev, qrels_dev, tokenizer, device,
+                model, corpus_dev, sampled_queries_dev, sampled_qrels_dev, tokenizer, device,
                 batch_size=args.per_device_eval_batch_size, eval_accumulation_steps=args.eval_accumulation_steps
             )
             logging.info(f"Epoch {epoch+1} dev metrics for {dataset}: {dev_metrics}")
@@ -343,8 +379,17 @@ def main():
             primary_metric = dev_metrics["NDCG"].get("NDCG@10", 0)
             if primary_metric > best_metric:
                 best_metric = primary_metric
+                wait = 0  # reset the early stopping counter
                 model.save_pretrained(best_model_dir)
                 logging.info(f"New best model saved with NDCG@10: {best_metric}")
+            else:
+                wait += 1
+                logging.info(f"No improvement in NDCG@10. Early stopping wait counter: {wait}/{args.patience}")
+        
+        # Check for early stopping.
+        if wait >= args.patience:
+            logging.info(f"Early stopping triggered at epoch {epoch+1}.")
+            break
 
         # Save a checkpoint based on training steps if needed.
         if global_step % checkpoint_interval < steps_in_epoch:
@@ -368,10 +413,29 @@ def main():
         logging.info(f"Test metrics for {dataset}: {test_metrics}")
         wandb.log({f"{dataset}_test_metrics": test_metrics})
 
-    final_checkpoint_path = os.path.join(args.save_model_path, f"epoch_{args.num_train_epochs:02d}.pth")
-    torch.save(model.state_dict(), final_checkpoint_path)
-    logging.info("Training completed and final model checkpoint saved.")
+    # Option 1: Save using the HuggingFace standard (config + model weights)
+    model.save_pretrained(args.save_model_path)
+    logging.info("Training completed and best model saved.")
     wandb.finish()
 
 if __name__ == "__main__":
     main()
+
+    """
+    python -m script.gfr_finetune \
+    --datasets msmarco hotpotqa nq \
+    --pretrained_checkpoint ./gfr_pretrain_causal_lm_final_finewebedu_v2 \
+    --num_train_epochs 1 \
+    --per_device_train_batch_size 4 \
+    --gradient_accumulation_steps 8 \
+    --lr 1e-4 \
+    --per_device_eval_batch_size 2 \
+    --eval_accumulation_steps 1 \
+    --patience 3 \
+    --output_dir ./gfr_finetune_ckpts \
+    --save_model_path ./gfr_finetune_final \
+    --run_name 200M \
+    --wandb_project gfr_finetuning_document_ranking \
+    --wandb_entity nlp-maocode \
+    --wandb_api_key your_wandb_api_key
+    """
