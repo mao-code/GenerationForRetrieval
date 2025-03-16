@@ -315,7 +315,7 @@ def main():
     model.gfr.load_state_dict(backbone_model.state_dict(), strict=False)
 
     model.resize_token_embeddings(len(tokenizer))
-    
+
     model.to(device)
     num_params = sum(p.numel() for p in model.parameters())
     print(f"Number of parameters: {num_params}")
@@ -347,8 +347,8 @@ def main():
     sampled_queries_dev, sampled_qrels_dev = subsample_dev_set(queries_dev, qrels_dev, sample_percentage=args.sample_dev_percentage)
 
     for dataset in args.datasets:
-        logging.info(f"Dataset {dataset} dev queries: {len(dev_data[dataset][1])}", 
-        logging.info(f"Sampled dev queries: {len(sampled_queries_dev)}"))
+        logging.info(f"Dataset {dataset} dev queries: {len(dev_data[dataset][1])}")
+        logging.info(f"Sampled dev queries: {len(sampled_queries_dev)}")
         logging.info(f"Dataset {dataset} test queries: {len(test_data[dataset][1])}")
 
     checkpoint_dir = args.output_dir

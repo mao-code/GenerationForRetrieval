@@ -1598,6 +1598,12 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
 
         self.post_init()
 
+    def get_input_embeddings(self):
+        return self.gfr.get_input_embeddings()
+    
+    def set_input_embeddings(self, value):
+        return self.gfr.set_input_embeddings(value)
+
     def forward(
         self,
         input_ids: torch.LongTensor = None,
