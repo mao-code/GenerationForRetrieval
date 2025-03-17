@@ -65,20 +65,35 @@ def prepare_training_samples(corpus: dict, queries: dict, qrels: dict):
             training_samples.append((query_text, pos_doc_text, neg_doc_text))
     return training_samples
 
-def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, device, batch_size, epoch, grad_accum_steps=1, total_epochs=1):
+def train_and_validate(
+    model, optimizer, loss_fn, training_samples, tokenizer, device, batch_size, epoch,
+    grad_accum_steps=1, total_epochs=1, validate_every=1000, 
+    eval_fn=None, eval_data=None, validation_samples=None,
+    patience=3, best_metric=-float("inf"), best_model_dir="./best_model"
+):
     """
-    Performs one epoch of training with gradient accumulation.
-    Returns the average loss and the number of optimizer steps (training steps) performed.
+    Trains for one epoch with gradient accumulation and performs validation (with early stopping)
+    every `validate_every` training steps. Validation computes both a validation loss (on
+    provided validation_samples) and full retrieval metrics (if eval_fn and eval_data are provided).
+    
+    If the primary metric (NDCG@10) improves, best_metric is updated, wait is reset, and the best model
+    is saved. Otherwise, the wait counter increases, and if it exceeds patience, the training stops early.
+    
+    Returns a tuple:
+       (avg_training_loss, steps_in_epoch, updated_best_metric, wait, early_stop_flag)
     """
     model.train()
     total_loss = 0.0
     random.shuffle(training_samples)
     num_batches = len(training_samples) // batch_size + int(len(training_samples) % batch_size > 0)
     local_steps = 0
-
     trained_samples_num = 0
+    wait = 0
+    early_stop = False
+
     pbar = tqdm(range(num_batches), desc=f"Epoch {epoch+1}", unit="batch")
     optimizer.zero_grad()
+    
     for batch_idx in range(num_batches):
         start_idx = batch_idx * batch_size
         batch = training_samples[start_idx : start_idx + batch_size]
@@ -93,9 +108,9 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
         
         input_ids_pos = input_ids_pos.to(device)
         token_type_ids_pos = token_type_ids_pos.to(device)
+        attention_mask_pos = attention_mask_pos.to(device)
         input_ids_neg = input_ids_neg.to(device)
         token_type_ids_neg = token_type_ids_neg.to(device)
-        attention_mask_pos = attention_mask_pos.to(device)
         attention_mask_neg = attention_mask_neg.to(device)
         
         # Forward passes.
@@ -119,22 +134,94 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
             optimizer.step()
             optimizer.zero_grad()
             local_steps += 1
-
-        trained_samples_num += len(batch)
-        
-        wandb.log({
-            "iteration_loss": loss.item() * grad_accum_steps,
-            "gradient_norm": grad_norm,
-            "epoch": epoch+1,
-            "batch": batch_idx,
-            "training_samples_completeness": trained_samples_num / len(training_samples)
-        })
+            trained_samples_num += len(batch)
+            
+            # Log training metrics.
+            wandb.log({
+                "train/loss": loss.item() * grad_accum_steps,
+                "train/gradient_norm": grad_norm,
+                "train/epoch": epoch + 1,
+                "train/batch": batch_idx,
+                "train/training_samples_completeness": trained_samples_num / len(training_samples)
+            }, step=local_steps)
+            
+            # Run validation every `validate_every` training steps.
+            if local_steps % validate_every == 0:
+                model.eval()
+                # Compute validation loss over the provided validation_samples.
+                if validation_samples is not None and len(validation_samples) > 0:
+                    val_loss_total = 0.0
+                    val_batches = len(validation_samples) // batch_size + int(len(validation_samples) % batch_size > 0)
+                    for v_batch_idx in range(val_batches):
+                        v_start_idx = v_batch_idx * batch_size
+                        v_batch = validation_samples[v_start_idx: v_start_idx + batch_size]
+                        if not v_batch:
+                            break
+                        batch_queries_val = [query for query, pos_doc, neg_doc in v_batch]
+                        batch_pos_docs_val = [pos_doc for query, pos_doc, neg_doc in v_batch]
+                        batch_neg_docs_val = [neg_doc for query, pos_doc, neg_doc in v_batch]
+                        
+                        with torch.no_grad():
+                            input_ids_pos_val, token_type_ids_pos_val, attention_mask_pos_val = model.prepare_input(batch_pos_docs_val, batch_queries_val, tokenizer)
+                            input_ids_neg_val, token_type_ids_neg_val, attention_mask_neg_val = model.prepare_input(batch_neg_docs_val, batch_queries_val, tokenizer)
+                            input_ids_pos_val = input_ids_pos_val.to(device)
+                            token_type_ids_pos_val = token_type_ids_pos_val.to(device)
+                            attention_mask_pos_val = attention_mask_pos_val.to(device)
+                            input_ids_neg_val = input_ids_neg_val.to(device)
+                            token_type_ids_neg_val = token_type_ids_neg_val.to(device)
+                            attention_mask_neg_val = attention_mask_neg_val.to(device)
+                            
+                            output_pos_val = model(input_ids=input_ids_pos_val, token_type_ids=token_type_ids_pos_val, attention_mask=attention_mask_pos_val, return_dict=True)
+                            output_neg_val = model(input_ids=input_ids_neg_val, token_type_ids=token_type_ids_neg_val, attention_mask=attention_mask_neg_val, return_dict=True)
+                            score_pos_val = output_pos_val["logits"]
+                            score_neg_val = output_neg_val["logits"]
+                            target_val = torch.ones(score_pos_val.size(), device=device)
+                            loss_val = loss_fn(score_pos_val.view(-1), score_neg_val.view(-1), target_val.view(-1))
+                        val_loss_total += loss_val.item()
+                    avg_val_loss = val_loss_total / val_batches if val_batches > 0 else 0.0
+                    wandb.log({"val/loss": avg_val_loss, "val/step": local_steps}, step=local_steps)
+                    logging.info(f"Validation loss at global step {local_steps}: {avg_val_loss:.4f}")
+                
+                # Run full retrieval evaluation if eval_fn and eval_data are provided.
+                primary_metric = None
+                if eval_fn is not None and eval_data is not None:
+                    corpus_dev, queries_dev, qrels_dev, eval_batch_size, eval_accum_steps = eval_data
+                    dev_metrics = eval_fn(
+                        model, corpus_dev, queries_dev, qrels_dev, tokenizer, device,
+                        batch_size=eval_batch_size, eval_accumulation_steps=eval_accum_steps
+                    )
+                    primary_metric = dev_metrics["NDCG"].get("NDCG@10", 0)
+                    wandb.log({
+                        "val/step": local_steps,
+                        "val/NDCG@10": primary_metric,
+                        "val/MAP@10": dev_metrics["MAP"].get("MAP@10", 0),
+                    }, step=local_steps)
+                    logging.info(f"Full evaluation at global step {local_steps}: {dev_metrics}")
+                
+                # Early stopping check using the primary metric from retrieval evaluation.
+                if primary_metric is not None:
+                    if primary_metric > best_metric:
+                        best_metric = primary_metric
+                        wait = 0  # reset early stopping counter
+                        model.save_pretrained(best_model_dir)
+                        logging.info(f"New best model saved at step {local_steps} with NDCG@10: {best_metric}")
+                    else:
+                        wait += 1
+                        logging.info(f"No improvement in NDCG@10. Early stopping wait counter: {wait}/{patience}")
+                    if wait >= patience:
+                        logging.info(f"Early stopping triggered at global step {local_steps}.")
+                        early_stop = True
+                        model.train()
+                        break  # break out of training batches
+                model.train()
         
         pbar.set_postfix(loss=f"{loss.item() * grad_accum_steps:.4f}")
         pbar.update(1)
+        if early_stop:
+            break  # break out of epoch loop if early stopping triggered
     pbar.close()
     avg_loss = total_loss / num_batches
-    return avg_loss, local_steps
+    return avg_loss, local_steps, best_metric, wait, early_stop
 
 def beir_evaluate(qrels: dict, results: dict, k_values: list, ignore_identical_ids: bool = True):
     """
@@ -281,7 +368,8 @@ def main():
     parser.add_argument("--per_device_eval_batch_size", type=int, default=2, help="Per-device evaluation batch size")
     parser.add_argument("--eval_accumulation_steps", type=int, default=1, help="Evaluation accumulation steps")
     parser.add_argument("--patience", type=int, default=3, help="Number of epochs to wait for improvement before early stopping")
-
+    parser.add_argument("--validate_every_n_steps", type=int, default=1000, help="Perform validation every n training steps")
+    
     # Logging and checkpointing.
     parser.add_argument("--output_dir", type=str, default="./gfr_finetune_ckpts", help="Output directory for model checkpoints")
     parser.add_argument("--save_model_path", type=str, default="gfr_finetune_final", help="Directory to save the final best model")
@@ -358,6 +446,10 @@ def main():
     # Subsample the dev set
     sampled_queries_dev, sampled_qrels_dev = subsample_dev_set(queries_dev, qrels_dev, sample_percentage=args.sample_dev_percentage)
 
+    # Prepare validation samples for computing validation loss (using the dev data from the last loaded dataset).
+    validation_samples = prepare_training_samples(corpus_dev, queries_dev, qrels_dev)
+
+
     for dataset in args.datasets:
         logging.info(f"Dataset {dataset} dev queries: {len(dev_data[dataset][1])}")
         logging.info(f"Sampled dev queries: {len(sampled_queries_dev)}")
@@ -365,50 +457,36 @@ def main():
 
     checkpoint_dir = args.output_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
-
-    # Early stopping and checkpoint variables.
-    global_step = 0
-    checkpoint_interval = 10000  # save a checkpoint every 10k training steps
-    best_metric = -float("inf")    # example: best NDCG@10
     best_model_dir = os.path.join(checkpoint_dir, "best_model")
     os.makedirs(best_model_dir, exist_ok=True)
-    wait = 0  # counter for early stopping
+
+    global_step = 0
+    checkpoint_interval = 10000  # save a checkpoint every 10k training steps
+
+    # Training loop with integrated validation and early stopping.
+    current_best_metric = -float("inf")
+    wait = 0
+    early_stop_global = False
 
     for epoch in range(args.num_train_epochs):
         logging.info(f"Starting epoch {epoch+1}")
-        epoch_loss, steps_in_epoch = train_one_epoch(
+        epoch_loss, steps_in_epoch, current_best_metric, wait, early_stop = train_and_validate(
             model, optimizer, loss_fn, training_samples, tokenizer, device,
-            args.per_device_train_batch_size, epoch, args.gradient_accumulation_steps, args.num_train_epochs
+            args.per_device_train_batch_size, epoch, grad_accum_steps=args.gradient_accumulation_steps,
+            total_epochs=args.num_train_epochs,
+            validate_every=args.validate_every_n_steps,
+            eval_fn=evaluate_full_retrieval,
+            eval_data=(corpus_dev, sampled_queries_dev, sampled_qrels_dev, args.per_device_eval_batch_size, args.eval_accumulation_steps),
+            validation_samples=validation_samples,
+            patience=args.patience,
+            best_metric=current_best_metric,
+            best_model_dir=best_model_dir
         )
         global_step += steps_in_epoch
         logging.info(f"Epoch {epoch+1} training loss: {epoch_loss:.4f}")
         wandb.log({"epoch": epoch+1, "training_loss": epoch_loss, "global_step": global_step})
-
-        # Evaluate on each dev dataset.
-        for dataset, (corpus_dev, queries_dev, qrels_dev) in dev_data.items():
-            dev_metrics = evaluate_full_retrieval(
-                model, corpus_dev, sampled_queries_dev, sampled_qrels_dev, tokenizer, device,
-                batch_size=args.per_device_eval_batch_size, eval_accumulation_steps=args.eval_accumulation_steps
-            )
-            logging.info(f"Epoch {epoch+1} dev metrics for {dataset}: {dev_metrics}")
-            wandb.log({f"epoch_{epoch+1}_{dataset}_dev": dev_metrics})
-            # Choose primary metric (here, NDCG@10) from the first dev dataset.
-            primary_metric = dev_metrics["NDCG"].get("NDCG@10", 0)
-            if primary_metric > best_metric:
-                best_metric = primary_metric
-                wait = 0  # reset the early stopping counter
-                model.save_pretrained(best_model_dir)
-                logging.info(f"New best model saved with NDCG@10: {best_metric}")
-            else:
-                wait += 1
-                logging.info(f"No improvement in NDCG@10. Early stopping wait counter: {wait}/{args.patience}")
         
-        # Check for early stopping.
-        if wait >= args.patience:
-            logging.info(f"Early stopping triggered at epoch {epoch+1}.")
-            break
-
-        # Save a checkpoint based on training steps if needed.
+        # Save checkpoint if required.
         if global_step % checkpoint_interval < steps_in_epoch:
             checkpoint_filename = f"step_{global_step:06d}.pth"
             checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
@@ -420,6 +498,10 @@ def main():
         epoch_ckpt_path = os.path.join(checkpoint_dir, epoch_ckpt_filename)
         torch.save(model.state_dict(), epoch_ckpt_path)
         logging.info(f"Epoch checkpoint saved at {epoch_ckpt_path}")
+        
+        if early_stop:
+            early_stop_global = True
+            break  # exit training loop early if triggered
 
     # Final evaluation on test sets.
     for dataset, (corpus_test, queries_test, qrels_test) in test_data.items():
@@ -450,6 +532,7 @@ if __name__ == "__main__":
     --per_device_eval_batch_size 4 \
     --eval_accumulation_steps 1 \
     --patience 3 \
+    --validate_every_n_steps 1000 \
     --output_dir ./gfr_finetune_ckpts_200m_msmarco \
     --save_model_path ./gfr_finetune_final_200m_msmarco \
     --run_name 200M_msmarco \
