@@ -5,6 +5,7 @@ import time
 import random
 from datetime import datetime
 import pathlib
+from rank_bm25 import BM25Okapi
 
 import torch
 import torch.nn as nn
@@ -41,11 +42,29 @@ def load_dataset(dataset: str, split: str):
     else:
         print(f"Dataset '{dataset}' found locally. Skipping download.")
     corpus, queries, qrels = GenericDataLoader(data_folder=data_path).load(split=split)
-    return corpus, queries, qrels
+    
+    # Prefix each doc_id in corpus, and update queries and qrels accordingly.
+    new_corpus = {f"{dataset}_{doc_id}": content for doc_id, content in corpus.items()}
+    new_queries = {f"{dataset}_{qid}": query for qid, query in queries.items()}
+    new_qrels = {f"{dataset}_{qid}": {f"{dataset}_{doc_id}": score for doc_id, score in rels.items()}
+                 for qid, rels in qrels.items()}
+    
+    return new_corpus, new_queries, new_qrels
 
-def prepare_training_samples(corpus: dict, queries: dict, qrels: dict):
+def build_bm25_index(corpus: dict):
+    # Create a list of tokenized document texts and maintain a mapping from index to doc_id.
+    doc_ids = list(corpus.keys())
+
+    logging.info("Building BM25 index...")
+
+    tokenized_docs = [corpus[doc_id]['text'].split() for doc_id in tqdm(doc_ids, desc="Tokenizing Docs")]
+    bm25 = BM25Okapi(tokenized_docs)
+    return bm25, doc_ids
+
+def prepare_training_samples(corpus: dict, queries: dict, qrels: dict, hard_negative: bool = False, bm25_index=None, bm25_doc_ids=None):
     """
-    For each query, creates a training sample tuple: (query_text, positive_doc_text, negative_doc_text)
+    Creates training sample tuples: (query_text, positive_doc_text, negative_doc_text).
+    If hard_negative is True, uses the BM25 index to retrieve harder negatives.
     """
     training_samples = []
     all_doc_ids = list(corpus.keys())
@@ -58,9 +77,23 @@ def prepare_training_samples(corpus: dict, queries: dict, qrels: dict):
             continue
         for pos_doc_id in pos_doc_ids:
             pos_doc_text = corpus[pos_doc_id]['text']
-            neg_doc_id = random.choice(all_doc_ids)
-            while neg_doc_id in rel_docs:
+            if hard_negative and bm25_index is not None and bm25_doc_ids is not None:
+                # Tokenize the query similarly to how documents were tokenized.
+                tokenized_query = query_text.split()
+                # Retrieve top-n candidate negatives (e.g., top 10)
+                candidate_indices = bm25_index.get_top_n(tokenized_query, bm25_doc_ids, n=10)
+                # Filter out any candidates that are positive for this query.
+                candidate_negatives = [doc_id for doc_id in candidate_indices if doc_id not in rel_docs]
+                if candidate_negatives:
+                    neg_doc_id = candidate_negatives[0] # choose the top-ranked negative
+                else:
+                    neg_doc_id = random.choice(all_doc_ids)
+                    while neg_doc_id in rel_docs:
+                        neg_doc_id = random.choice(all_doc_ids)
+            else:
                 neg_doc_id = random.choice(all_doc_ids)
+                while neg_doc_id in rel_docs:
+                    neg_doc_id = random.choice(all_doc_ids)
             neg_doc_text = corpus[neg_doc_id]['text']
             training_samples.append((query_text, pos_doc_text, neg_doc_text))
     return training_samples
@@ -431,8 +464,17 @@ def main():
     for dataset in args.datasets:
         logging.info(f"Loading dataset: {dataset} (train split)")
         corpus_train, queries_train, qrels_train = load_dataset(dataset, split="train")
-        training_samples.extend(prepare_training_samples(corpus_train, queries_train, qrels_train))
-        
+        bm25_index, bm25_doc_ids = build_bm25_index(corpus_train)
+        # Prepare training samples with hard negatives enabled:
+        training_samples.extend(
+            prepare_training_samples(
+                corpus_train, queries_train, qrels_train,
+                hard_negative=True,
+                bm25_index=bm25_index,
+                bm25_doc_ids=bm25_doc_ids
+            )
+        )
+                
         logging.info(f"Loading dataset: {dataset} (dev split)")
         corpus_dev, queries_dev, qrels_dev = load_dataset(dataset, split="dev")
         dev_data[dataset] = (corpus_dev, queries_dev, qrels_dev)
@@ -443,12 +485,22 @@ def main():
 
     logging.info(f"Total training samples: {len(training_samples)}")
 
-    # Subsample the dev set
-    sampled_queries_dev, sampled_qrels_dev = subsample_dev_set(queries_dev, qrels_dev, sample_percentage=args.sample_dev_percentage)
+    # Combine dev data from all datasets.
+    combined_corpus_dev = {}
+    combined_queries_dev = {}
+    combined_qrels_dev = {}
+    for dataset, (corpus_d, queries_d, qrels_d) in dev_data.items():
+        combined_corpus_dev.update(corpus_d)
+        combined_queries_dev.update(queries_d)
+        combined_qrels_dev.update(qrels_d)
 
-    # Prepare validation samples for computing validation loss (using the dev data from the last loaded dataset).
-    validation_samples = prepare_training_samples(corpus_dev, queries_dev, qrels_dev)
+    # Shuffle and subsample the combined dev set.
+    sampled_queries_dev, sampled_qrels_dev = subsample_dev_set(combined_queries_dev, combined_qrels_dev, sample_percentage=args.sample_dev_percentage)
 
+    # Build BM25 index on the combined dev corpus.
+    val_bm25_index, val_bm25_doc_ids = build_bm25_index(combined_corpus_dev)
+    # Prepare validation samples using hard negatives.
+    validation_samples = prepare_training_samples(combined_corpus_dev, sampled_queries_dev, sampled_qrels_dev, hard_negative=True, bm25_index=val_bm25_index, bm25_doc_ids=val_bm25_doc_ids)
 
     for dataset in args.datasets:
         logging.info(f"Dataset {dataset} dev queries: {len(dev_data[dataset][1])}")
@@ -476,7 +528,7 @@ def main():
             total_epochs=args.num_train_epochs,
             validate_every=args.validate_every_n_steps,
             eval_fn=evaluate_full_retrieval,
-            eval_data=(corpus_dev, sampled_queries_dev, sampled_qrels_dev, args.per_device_eval_batch_size, args.eval_accumulation_steps),
+            eval_data=(combined_corpus_dev, sampled_queries_dev, sampled_qrels_dev, args.per_device_eval_batch_size, args.eval_accumulation_steps),
             validation_samples=validation_samples,
             patience=args.patience,
             best_metric=current_best_metric,
