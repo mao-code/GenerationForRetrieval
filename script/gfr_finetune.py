@@ -58,7 +58,9 @@ def build_bm25_index(corpus: dict):
     logging.info("Building BM25 index...")
 
     tokenized_docs = [corpus[doc_id]['text'].split() for doc_id in tqdm(doc_ids, desc="Tokenizing Docs")]
+   
     bm25 = BM25Okapi(tokenized_docs)
+   
     return bm25, doc_ids
 
 def prepare_training_samples(corpus: dict, queries: dict, qrels: dict, hard_negative: bool = False, bm25_index=None, bm25_doc_ids=None):
@@ -68,7 +70,7 @@ def prepare_training_samples(corpus: dict, queries: dict, qrels: dict, hard_nega
     """
     training_samples = []
     all_doc_ids = list(corpus.keys())
-    for qid, rel_docs in qrels.items():
+    for qid, rel_docs in tqdm(qrels.items(), total=len(qrels), desc="Processing queries"):
         if qid not in queries:
             continue
         query_text = queries[qid]
@@ -80,7 +82,7 @@ def prepare_training_samples(corpus: dict, queries: dict, qrels: dict, hard_nega
             if hard_negative and bm25_index is not None and bm25_doc_ids is not None:
                 # Tokenize the query similarly to how documents were tokenized.
                 tokenized_query = query_text.split()
-                # Retrieve top-n candidate negatives (e.g., top 10)
+                # Retrieve top-n candidate negatives (e.g., top 10) (SLOW)
                 candidate_indices = bm25_index.get_top_n(tokenized_query, bm25_doc_ids, n=10)
                 # Filter out any candidates that are positive for this query.
                 candidate_negatives = [doc_id for doc_id in candidate_indices if doc_id not in rel_docs]
