@@ -104,9 +104,6 @@ def train_one_epoch(model, optimizer, loss_fn, training_samples, tokenizer, devi
         score_pos = output_pos["logits"]  # shape: (batch, 1)
         score_neg = output_neg["logits"]  # shape: (batch, 1)
 
-        print("Score Pos: ", score_pos)
-        print("Score Neg: ", score_neg)
-        
         # Create target tensor for MarginRankingLoss.
         target = torch.ones(score_pos.size(), device=device)
         loss = loss_fn(score_pos.view(-1), score_neg.view(-1), target.view(-1))
@@ -446,8 +443,8 @@ if __name__ == "__main__":
     --datasets msmarco \
     --pretrained_checkpoint ./gfr_pretrain_causal_lm_final_finewebedu_v2_200m \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 4 \
-    --gradient_accumulation_steps 8 \
+    --per_device_train_batch_size 8 \
+    --gradient_accumulation_steps 4 \
     --lr 1e-4 \
     --sample_dev_percentage 0.05 \
     --per_device_eval_batch_size 4 \
