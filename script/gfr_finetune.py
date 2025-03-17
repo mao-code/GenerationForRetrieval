@@ -82,8 +82,8 @@ def prepare_training_samples(corpus: dict, queries: dict, qrels: dict, hard_nega
             if hard_negative and bm25_index is not None and bm25_doc_ids is not None:
                 # Tokenize the query similarly to how documents were tokenized.
                 tokenized_query = query_text.split()
-                # Retrieve top-n candidate negatives (e.g., top 10) (SLOW)
-                candidate_indices = bm25_index.get_top_n(tokenized_query, bm25_doc_ids, n=10)
+                # Retrieve top-n candidate negatives (e.g., top 5) (SLOW)
+                candidate_indices = bm25_index.get_top_n(tokenized_query, bm25_doc_ids, n=5)
                 # Filter out any candidates that are positive for this query.
                 candidate_negatives = [doc_id for doc_id in candidate_indices if doc_id not in rel_docs]
                 if candidate_negatives:
