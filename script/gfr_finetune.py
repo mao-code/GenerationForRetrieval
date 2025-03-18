@@ -5,7 +5,6 @@ import time
 import random
 from datetime import datetime
 import pathlib
-# from rank_bm25 import BM25Okapi
 import bm25s
 
 import torch
@@ -53,17 +52,6 @@ def load_dataset(dataset: str, split: str):
                  for qid, rels in qrels.items()}
     
     return new_corpus, new_queries, new_qrels
-
-# def build_bm25_index(corpus: dict):
-#     # Create a list of tokenized document texts and maintain a mapping from index to doc_id.
-#     doc_ids = list(corpus.keys())
-
-#     tokenized_docs = [corpus[doc_id]['text'].split() for doc_id in tqdm(doc_ids, desc="Tokenizing Docs")]
-    
-#     logging.info("Building BM25 index...")
-#     bm25 = BM25Okapi(tokenized_docs)
-   
-#     return bm25, doc_ids
 
 def build_bm25_index(corpus: dict):
     """
@@ -346,7 +334,6 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
     Full retrieval evaluation: for each query, iterate over the corpus in batches,
     compute scores with the model, and then calculate BEIR metrics.
     """
-    base_model = model.module if hasattr(model, "module") else model
     model.eval()
     results = {}
     total_inference_time = 0.0
@@ -358,13 +345,14 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
         for i in range(0, len(doc_ids), batch_size):
             batch_doc_ids = doc_ids[i : i + batch_size]
             batch_docs = [corpus[doc_id]['text'] for doc_id in batch_doc_ids]
-            batch_input_ids, batch_token_type_ids = base_model.prepare_input(batch_docs, [query] * len(batch_docs), tokenizer)
+            batch_input_ids, batch_token_type_ids, batch_attention_mask = model.prepare_input(batch_docs, [query] * len(batch_docs), tokenizer)
             batch_input_ids = batch_input_ids.to(device)
             batch_token_type_ids = batch_token_type_ids.to(device)
+            batch_attention_mask = batch_attention_mask.to(device)
             
             start_time = time.time()
             with torch.no_grad():
-                output = model(input_ids=batch_input_ids, token_type_ids=batch_token_type_ids, return_dict=True)
+                output = model(input_ids=batch_input_ids, token_type_ids=batch_token_type_ids, attention_mask=batch_attention_mask, return_dict=True)
             elapsed = time.time() - start_time
             total_inference_time += elapsed
             total_docs_processed += len(batch_doc_ids)
