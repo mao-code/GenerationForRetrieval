@@ -55,10 +55,9 @@ def build_bm25_index(corpus: dict):
     # Create a list of tokenized document texts and maintain a mapping from index to doc_id.
     doc_ids = list(corpus.keys())
 
-    logging.info("Building BM25 index...")
-
     tokenized_docs = [corpus[doc_id]['text'].split() for doc_id in tqdm(doc_ids, desc="Tokenizing Docs")]
-   
+    
+    logging.info("Building BM25 index...")
     bm25 = BM25Okapi(tokenized_docs)
    
     return bm25, doc_ids
