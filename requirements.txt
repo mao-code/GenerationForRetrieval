@@ -7,4 +7,5 @@ mamba-ssm
 torchinfo
 wandb
 sentencepiece
-rank-bm25
+# rank-bm25
+bm25s

@@ -5,7 +5,8 @@ import time
 import random
 from datetime import datetime
 import pathlib
-from rank_bm25 import BM25Okapi
+# from rank_bm25 import BM25Okapi
+import bm25s
 
 import torch
 import torch.nn as nn
@@ -27,6 +28,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     level=logging.INFO,
 )
+
+retriever = bm25s.BM25()
 
 #############################################
 # Helper Functions
@@ -51,24 +54,64 @@ def load_dataset(dataset: str, split: str):
     
     return new_corpus, new_queries, new_qrels
 
-def build_bm25_index(corpus: dict):
-    # Create a list of tokenized document texts and maintain a mapping from index to doc_id.
-    doc_ids = list(corpus.keys())
+# def build_bm25_index(corpus: dict):
+#     # Create a list of tokenized document texts and maintain a mapping from index to doc_id.
+#     doc_ids = list(corpus.keys())
 
-    tokenized_docs = [corpus[doc_id]['text'].split() for doc_id in tqdm(doc_ids, desc="Tokenizing Docs")]
+#     tokenized_docs = [corpus[doc_id]['text'].split() for doc_id in tqdm(doc_ids, desc="Tokenizing Docs")]
     
-    logging.info("Building BM25 index...")
-    bm25 = BM25Okapi(tokenized_docs)
+#     logging.info("Building BM25 index...")
+#     bm25 = BM25Okapi(tokenized_docs)
    
-    return bm25, doc_ids
+#     return bm25, doc_ids
+
+def build_bm25_index(corpus: dict):
+    """
+    Builds a BM25S index using bm25s.
+    Returns the BM25S object and a list of document IDs.
+    """
+    # Extract doc_ids and raw document texts.
+    doc_ids = list(corpus.keys())
+    raw_docs = [corpus[doc_id]['text'] for doc_id in doc_ids]
+    
+    logging.info("Tokenizing documents using BM25S tokenizer...")
+    # bm25s.tokenize() expects a list of strings.
+    tokenized_docs = bm25s.tokenize(raw_docs, stopwords="en")
+    
+    logging.info("Building BM25S index...")
+    # Build the BM25S index using raw document texts.
+    bm25_index = retriever.index(tokenized_docs)
+    
+    return bm25_index, doc_ids
 
 def prepare_training_samples(corpus: dict, queries: dict, qrels: dict, hard_negative: bool = False, bm25_index=None, bm25_doc_ids=None):
     """
     Creates training sample tuples: (query_text, positive_doc_text, negative_doc_text).
-    If hard_negative is True, uses the BM25 index to retrieve harder negatives.
+    If hard_negative is True, uses the BM25S index to precompute hard negatives.
     """
     training_samples = []
     all_doc_ids = list(corpus.keys())
+    
+    # Precompute hard negatives using BM25S if enabled.
+    hard_negatives = {}
+    if hard_negative and bm25_index is not None and bm25_doc_ids is not None:
+        for qid in tqdm(qrels, desc="Precomputing hard negatives"):
+            query_text = queries[qid]
+            tokenized_query = bm25s.tokenize(query_text)  # BM25S tokenizer
+            # Retrieve top-5 candidate indices (BM25S.retrieve returns indices by default)
+            # results: (doc ids, scores)
+            results, _ = bm25_index.retrieve(tokenized_query, k=5)
+            candidate_negatives = [id for id in results[0] if id not in qrels[qid]]
+            if candidate_negatives:
+                hard_negatives[qid] = candidate_negatives[0]  # Choose the top-ranked negative.
+            else:
+                # Fallback to a random negative if none of the top candidates are valid.
+                neg_doc_id = random.choice(all_doc_ids)
+                while neg_doc_id in qrels[qid]:
+                    neg_doc_id = random.choice(all_doc_ids)
+                hard_negatives[qid] = neg_doc_id
+    
+    # Process queries and create training samples.
     for qid, rel_docs in tqdm(qrels.items(), total=len(qrels), desc="Processing queries"):
         if qid not in queries:
             continue
@@ -78,25 +121,16 @@ def prepare_training_samples(corpus: dict, queries: dict, qrels: dict, hard_nega
             continue
         for pos_doc_id in pos_doc_ids:
             pos_doc_text = corpus[pos_doc_id]['text']
-            if hard_negative and bm25_index is not None and bm25_doc_ids is not None:
-                # Tokenize the query similarly to how documents were tokenized.
-                tokenized_query = query_text.split()
-                # Retrieve top-n candidate negatives (e.g., top 5) (SLOW)
-                candidate_indices = bm25_index.get_top_n(tokenized_query, bm25_doc_ids, n=5)
-                # Filter out any candidates that are positive for this query.
-                candidate_negatives = [doc_id for doc_id in candidate_indices if doc_id not in rel_docs]
-                if candidate_negatives:
-                    neg_doc_id = candidate_negatives[0] # choose the top-ranked negative
-                else:
-                    neg_doc_id = random.choice(all_doc_ids)
-                    while neg_doc_id in rel_docs:
-                        neg_doc_id = random.choice(all_doc_ids)
+            if hard_negative and qid in hard_negatives:
+                neg_doc_id = hard_negatives[qid]  # Use the precomputed hard negative.
             else:
+                # Fallback to a random negative.
                 neg_doc_id = random.choice(all_doc_ids)
                 while neg_doc_id in rel_docs:
                     neg_doc_id = random.choice(all_doc_ids)
             neg_doc_text = corpus[neg_doc_id]['text']
             training_samples.append((query_text, pos_doc_text, neg_doc_text))
+            
     return training_samples
 
 def train_and_validate(
