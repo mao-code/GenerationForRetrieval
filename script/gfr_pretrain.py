@@ -272,7 +272,7 @@ def main():
         warmup_steps=warmup_steps,
         save_steps=10000,
         report_to="wandb",
-        logging_dir="./logs",
+        logging_dir="./logs_pretrain",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
