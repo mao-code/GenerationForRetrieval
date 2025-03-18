@@ -418,6 +418,7 @@ def main():
     parser.add_argument("--per_device_train_batch_size", type=int, default=4, help="Training batch size.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Number of gradient accumulation steps.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
+    parser.add_argument("--margin", type=float, default=1.0, help="Margin for MarginRankingLoss")
     
     # Evaluation settings.
     parser.add_argument("--sample_dev_percentage", type=float, default=0.05, help="Percentage of dev queries to sample for evaluation")
@@ -477,7 +478,7 @@ def main():
     print(f"Number of parameters: {num_params}")
 
     # Set up loss and optimizer.
-    loss_fn = nn.MarginRankingLoss(margin=1.0)
+    loss_fn = nn.MarginRankingLoss(margin=args.margin)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     # Load datasets.
@@ -603,6 +604,7 @@ if __name__ == "__main__":
     --per_device_train_batch_size 8 \
     --gradient_accumulation_steps 4 \
     --lr 1e-4 \
+    --margin 5.0 \
     --sample_dev_percentage 0.05 \
     --per_device_eval_batch_size 4 \
     --eval_accumulation_steps 1 \
