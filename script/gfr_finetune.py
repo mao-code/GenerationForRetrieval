@@ -150,6 +150,7 @@ def main():
     parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Number of gradient accumulation steps.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
     parser.add_argument("--margin", type=float, default=1.0, help="Margin for MarginRankingLoss (unused in BCE)")
+    parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay for optimizer.")
     
     # Evaluation settings.
     parser.add_argument("--sample_dev_percentage", type=float, default=0.05, help="Percentage of dev queries to sample for evaluation")
@@ -271,6 +272,7 @@ def main():
         fp16=True,
         learning_rate=args.lr,
         warmup_steps=warmup_steps,
+        weight_decay=0.01,
 
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         eval_accumulation_steps=args.eval_accumulation_steps,
@@ -325,9 +327,10 @@ if __name__ == "__main__":
     --datasets hotpotqa \
     --pretrained_checkpoint gfr_pretrain_causal_lm_final_finewebedu_v2_200m \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 8 \
-    --gradient_accumulation_steps 4 \
-    --lr 1e-4 \
+    --per_device_train_batch_size 16 \
+    --gradient_accumulation_steps 8 \
+    --lr 1e-5 \
+    --weight_decay 0.01 \
     --sample_dev_percentage 0.05 \
     --per_device_eval_batch_size 4 \
     --eval_accumulation_steps 1 \
