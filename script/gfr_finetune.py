@@ -272,7 +272,7 @@ def main():
         fp16=True,
         learning_rate=args.lr,
         warmup_steps=warmup_steps,
-        weight_decay=0.01,
+        weight_decay=args.wight_decay,
 
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         eval_accumulation_steps=args.eval_accumulation_steps,
