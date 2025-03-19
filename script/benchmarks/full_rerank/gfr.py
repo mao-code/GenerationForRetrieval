@@ -63,5 +63,5 @@ if __name__ == "__main__":
     python -m script.benchmarks.full_rerank.gfr \
     --saved_model_path ./gfr_finetune_ckpts_200m_msmarco/checkpoint-1000 \
     --datasets msmarco \
-    --per_device_eval_batch_size 2
+    --per_device_eval_batch_size 64
     """

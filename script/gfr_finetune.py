@@ -303,14 +303,14 @@ def main():
     # Train the model.
     trainer.train()
 
-    # Final evaluation on test sets.
-    for dataset, (corpus_test, queries_test, qrels_test) in test_data.items():
-        test_metrics = evaluate_full_retrieval(
-            model, corpus_test, queries_test, qrels_test, tokenizer, device,
-            batch_size=args.per_device_eval_batch_size
-        )
-        logging.info(f"Test metrics for {dataset}: {test_metrics}")
-        wandb.log({f"{dataset}_test_metrics": test_metrics})
+    # Final evaluation on test sets. (full-rerank is really slow, so we skip it here)
+    # for dataset, (corpus_test, queries_test, qrels_test) in test_data.items():
+    #     test_metrics = evaluate_full_retrieval(
+    #         model, corpus_test, queries_test, qrels_test, tokenizer, device,
+    #         batch_size=args.per_device_eval_batch_size
+    #     )
+    #     logging.info(f"Test metrics for {dataset}: {test_metrics}")
+    #     wandb.log({f"{dataset}_test_metrics": test_metrics})
 
     # Save the final model.
     trainer.save_model(args.save_model_path)
@@ -322,7 +322,7 @@ if __name__ == "__main__":
 
     """
     python -m script.gfr_finetune \
-    --datasets msmarco \
+    --datasets hotpotqa \
     --pretrained_checkpoint gfr_pretrain_causal_lm_final_finewebedu_v2_200m \
     --num_train_epochs 1 \
     --per_device_train_batch_size 8 \
@@ -333,9 +333,9 @@ if __name__ == "__main__":
     --eval_accumulation_steps 1 \
     --patience 3 \
     --validate_every_n_steps 1000 \
-    --output_dir ./gfr_finetune_ckpts_200m_msmarco \
-    --save_model_path ./gfr_finetune_final_200m_msmarco \
-    --run_name 200M_msmarco \
+    --output_dir ./gfr_finetune_ckpts_200m_hotpotqa \
+    --save_model_path ./gfr_finetune_final_200m_hotpotqa \
+    --run_name 200M_hotpotqa \
     --wandb_project gfr_finetuning_document_ranking \
     --wandb_entity nlp-maocode \
     --wandb_api_key your_wandb_api_key
