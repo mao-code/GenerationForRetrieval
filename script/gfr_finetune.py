@@ -272,7 +272,7 @@ def main():
         fp16=True,
         learning_rate=args.lr,
         warmup_steps=warmup_steps,
-        weight_decay=args.wight_decay,
+        weight_decay=args.weight_decay,
 
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         eval_accumulation_steps=args.eval_accumulation_steps,
@@ -324,7 +324,7 @@ if __name__ == "__main__":
 
     """
     python -m script.gfr_finetune \
-    --datasets hotpotqa \
+    --datasets msmarco \
     --pretrained_checkpoint gfr_pretrain_causal_lm_final_finewebedu_v2_200m \
     --num_train_epochs 1 \
     --per_device_train_batch_size 16 \
@@ -335,10 +335,10 @@ if __name__ == "__main__":
     --per_device_eval_batch_size 4 \
     --eval_accumulation_steps 1 \
     --patience 3 \
-    --validate_every_n_steps 1000 \
-    --output_dir ./gfr_finetune_ckpts_200m_hotpotqa \
-    --save_model_path ./gfr_finetune_final_200m_hotpotqa \
-    --run_name 200M_hotpotqa \
+    --validate_every_n_steps 100 \
+    --output_dir ./gfr_finetune_ckpts_200m_msmarco \
+    --save_model_path ./gfr_finetune_final_200m_msmarco \
+    --run_name 200M_msmarco \
     --wandb_project gfr_finetuning_document_ranking \
     --wandb_entity nlp-maocode \
     --wandb_api_key your_wandb_api_key
