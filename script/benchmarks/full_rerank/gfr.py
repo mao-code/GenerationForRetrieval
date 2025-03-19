@@ -5,6 +5,15 @@ from transformers import LlamaTokenizer
 from GFR.modeling_GFR import GFRForSequenceScoring
 from script.utils import load_dataset, evaluate_full_retrieval
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("gfr_test_results.log"),
+        logging.StreamHandler()
+    ]
+)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--saved_model_path", type=str, required=True,
