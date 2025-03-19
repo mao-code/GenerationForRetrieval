@@ -97,7 +97,7 @@ def beir_evaluate_custom(qrels: dict, results: dict, k_values: list, metric: str
 
 def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict,
                             tokenizer, device, batch_size=2, eval_accumulation_steps=1,
-                            k_values=[1, 3, 5, 10, 100]):
+                            k_values=[1, 3, 5, 10]):
     """
     For each query, scores all documents in the corpus using the loaded model.
     Returns evaluation metrics (NDCG, MAP, Recall, Precision, MRR, etc.).
@@ -110,7 +110,7 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict,
     for query_id, query in tqdm(queries.items(), desc="Evaluating queries"):
         results[query_id] = {}
         doc_ids = list(corpus.keys())
-        for i in range(0, len(doc_ids), batch_size):
+        for i in tqdm(range(0, len(doc_ids), batch_size), desc=f"Scoring docs for query {query_id}", leave=False):
             batch_doc_ids = doc_ids[i : i + batch_size]
             batch_docs = [corpus[doc_id]['text'] for doc_id in batch_doc_ids]
             # Prepare input tensors (assumes model.prepare_input exists)
