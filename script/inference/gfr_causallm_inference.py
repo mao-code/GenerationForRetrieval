@@ -41,6 +41,9 @@ def main():
     # Load the tokenizer.
     # If you saved the tokenizer with your model, you can replace args.tokenizer_source with args.model_path.
     tokenizer = LlamaTokenizer.from_pretrained(args.tokenizer_source)
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
     # Load the model
     model = GFRForCausalLM.from_pretrained(args.model_path)

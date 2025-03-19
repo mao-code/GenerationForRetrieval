@@ -218,34 +218,33 @@ def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict, tok
 #############################################
 
 class DocumentRankingDataset(Dataset):
-    def __init__(self, samples):
+    def __init__(self, samples, tokenizer, model):
         # samples is a list of tuples: (query_text, doc_text, label)
         self.samples = samples
+        self.tokenizer = tokenizer
+        self.model = model
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
+        # Extract query, doc, and label from the sample
         query, doc, label = self.samples[idx]
-        return {"query": query, "doc": doc, "label": label}
 
-def collate_fn_factory(tokenizer, model):
-    """
-    Returns a collate function that uses model.prepare_input to convert raw text into tensors.
-    """
-    def collate_fn(batch):
-        queries = [item["query"] for item in batch]
-        docs = [item["doc"] for item in batch]
-        labels = torch.tensor([item["label"] for item in batch], dtype=torch.float32)
-        input_ids, token_type_ids, attention_mask = model.prepare_input(docs, queries, tokenizer)
+        # Tokenize and prepare input tensors
+        # Assuming model.prepare_input takes lists of docs and queries
+        input_ids, token_type_ids, attention_mask = self.model.prepare_input(
+            [doc], [query], self.tokenizer
+        )
+
+        # Return a dictionary with preprocessed tensors and label
         return {
-            "input_ids": input_ids,
-            "token_type_ids": token_type_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
+            "input_ids": input_ids.squeeze(0),  # Remove batch dimension
+            "token_type_ids": token_type_ids.squeeze(0),
+            "attention_mask": attention_mask.squeeze(0),
+            "labels": torch.tensor(label, dtype=torch.float32)  # Use "labels" for Trainer
         }
-    return collate_fn
-
+    
 #############################################
 # New: Custom Trainer subclass to override compute_loss
 #############################################
@@ -255,7 +254,7 @@ class DocumentRankingTrainer(Trainer):
         super().__init__(**kwargs)
         self.loss_fn = loss_fn
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.pop("labels")
         outputs = model(**inputs, return_dict=True)
         logits = outputs["logits"].view(-1)
@@ -382,14 +381,11 @@ def main():
         logging.info(f"Dataset {dataset} test queries: {len(test_data[dataset][1])}")
 
     # Create PyTorch Datasets.
-    train_dataset = DocumentRankingDataset(training_samples)
-    val_dataset = DocumentRankingDataset(validation_samples)
+    train_dataset = DocumentRankingDataset(training_samples, tokenizer, model)
+    val_dataset = DocumentRankingDataset(validation_samples, tokenizer, model)
 
     total_training_steps = math.ceil(len(train_dataset) / (args.per_device_train_batch_size * args.gradient_accumulation_steps)) * args.num_train_epochs
     warmup_steps = int(0.1 * total_training_steps)
-
-    # Create Data Collator using our custom collate function.
-    data_collator = collate_fn_factory(tokenizer, model)
 
     # Set up TrainingArguments.
     training_args = TrainingArguments(
@@ -417,6 +413,8 @@ def main():
         greater_is_better=False,
         report_to="wandb",
         run_name=run_name,
+
+        remove_unused_columns=False
     )
 
     # Initialize our custom Trainer.
@@ -425,7 +423,6 @@ def main():
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        data_collator=data_collator,
         loss_fn=loss_fn,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=args.patience)]
     )
@@ -449,3 +446,24 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    """
+    python -m script.gfr_finetune \
+    --datasets msmarco \
+    --pretrained_checkpoint gfr_pretrain_causal_lm_final_finewebedu_v2_200m \
+    --num_train_epochs 1 \
+    --per_device_train_batch_size 8 \
+    --gradient_accumulation_steps 4 \
+    --lr 1e-4 \
+    --sample_dev_percentage 0.05 \
+    --per_device_eval_batch_size 4 \
+    --eval_accumulation_steps 1 \
+    --patience 3 \
+    --validate_every_n_steps 1000 \
+    --output_dir ./gfr_finetune_ckpts_200m_msmarco \
+    --save_model_path ./gfr_finetune_final_200m_msmarco \
+    --run_name 200M_msmarco \
+    --wandb_project gfr_finetuning_document_ranking \
+    --wandb_entity nlp-maocode \
+    --wandb_api_key your_wandb_api_key
+    """

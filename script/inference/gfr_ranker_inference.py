@@ -10,12 +10,19 @@ def main():
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    if tokenizer.sep_token is None:
+        tokenizer.add_special_tokens({"sep_token": "[SEP]"})
+    if "[SCORE]" not in tokenizer.get_vocab():
+        tokenizer.add_special_tokens({"additional_special_tokens": ["[SCORE]"]})
 
     # Load the pre-trained sequence scoring model.
     model = GFRForSequenceScoring.from_pretrained(checkpoint_path)
+    model.resize_token_embeddings(len(tokenizer))
     model.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"Number of parameters: {num_params}")
 
     # Define example documents and queries.
     documents = [
