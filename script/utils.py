@@ -44,27 +44,28 @@ def build_bm25_index(corpus: dict):
     tokenized_docs = bm25s.tokenize(raw_docs, stopwords="en")
     
     logging.info("Building BM25S index...")
-    bm25_index = retriever.index(tokenized_docs)
-    return bm25_index, doc_ids
+    retriever.index(tokenized_docs)
 
-def search_bm25(query: str, bm25_index, doc_ids, top_k: int = 5):
+    return retriever, doc_ids
+
+def search_bm25(query: str, retriever, doc_ids, top_k: int = 5):
     """
     Searches the BM25 index for the top n relevant documents given a query.
     
     Args:
         query (str): The search query.
-        bm25_index: The BM25S index built from the corpus.
+        retriever: The BM25S index built from the corpus.
         doc_ids (list): List of document IDs corresponding to the index.
         top_n (int): Number of top results to return (default is 5).
     
     Returns:
         List of tuples in the format (doc_id, score) for the top n documents.
     """
-    # Tokenize the query (we assume bm25s.tokenize returns a list of tokens for each document)
-    tokenized_query = bm25s.tokenize([query], stopwords="en")[0]
+    # Tokenize the query
+    tokenized_query = bm25s.tokenize(query, stopwords="en")[0]
 
     # results: List of tuples in the format (doc_id, score)
-    results, _ = bm25_index.retrieve(tokenized_query, k=top_k)
+    results, _ = retriever.retrieve(tokenized_query, k=top_k)
 
     return results
 
