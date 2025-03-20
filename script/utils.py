@@ -65,9 +65,9 @@ def search_bm25(query: str, retriever, doc_ids, top_k: int = 5):
     tokenized_query = bm25s.tokenize(query, stopwords="en")[0]
 
     # results: List of tuples in the format (doc_id, score)
-    results, _ = retriever.retrieve(tokenized_query, k=top_k)
+    docs, scores = retriever.retrieve(tokenized_query, k=top_k)
 
-    return results
+    return docs, scores
 
 def beir_evaluate(qrels: dict, results: dict, k_values: list, ignore_identical_ids: bool = True):
     """Evaluates ranking results using BEIR's pytrec_eval."""
