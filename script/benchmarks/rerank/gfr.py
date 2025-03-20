@@ -72,6 +72,7 @@ def main():
     for qid, query_text in tqdm(queries.items(), desc="Processing queries"):
         # Retrieve top BM25 results (list of tuples: (doc_id, bm25_score)).
         docs, scores = search_bm25(query_text, retriever, doc_ids, top_k=args.top_k)
+        print(docs)
         candidate_doc_ids = [doc_id for doc_id in docs]
         candidate_docs = [corpus[doc_id]['text'] for doc_id in candidate_doc_ids]
 

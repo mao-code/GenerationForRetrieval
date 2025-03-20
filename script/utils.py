@@ -32,6 +32,7 @@ def load_dataset(dataset: str, split: str):
     new_queries = {f"{dataset}_{qid}": query for qid, query in queries.items()}
     new_qrels = {f"{dataset}_{qid}": {f"{dataset}_{doc_id}": score for doc_id, score in rels.items()}
                  for qid, rels in qrels.items()}
+    
     return new_corpus, new_queries, new_qrels
 
 
@@ -63,11 +64,15 @@ def search_bm25(query: str, retriever, doc_ids, top_k: int = 5):
     """
     # Tokenize the query
     tokenized_query = bm25s.tokenize(query, stopwords="en")[0]
-
+    
+    # Retrieve indices and scores
     # Get top-k results as a tuple of (doc ids, scores). Both are arrays of shape (n_queries, k).
-    docs, scores = retriever.retrieve(tokenized_query, k=top_k)
-
-    return docs[0], scores[0]
+    indices, scores = retriever.retrieve(tokenized_query, k=top_k)
+    
+    # Map indices back to original document IDs
+    original_ids = [doc_ids[i] for i in indices[0]]
+    
+    return original_ids, scores[0]
 
 def beir_evaluate(qrels: dict, results: dict, k_values: list, ignore_identical_ids: bool = True):
     """Evaluates ranking results using BEIR's pytrec_eval."""
