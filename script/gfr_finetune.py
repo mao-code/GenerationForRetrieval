@@ -41,7 +41,6 @@ def prepare_training_samples_bce(corpus: dict, queries: dict, qrels: dict, hard_
     if hard_negative and bm25_index is not None and bm25_doc_ids is not None:
         for qid in tqdm(qrels, desc="Precomputing hard negatives"):
             query_text = queries[qid]
-            tokenized_query = bm25s.tokenize(query_text)
             doc_ids, scores = search_bm25(query_text, bm25_index, bm25_doc_ids, top_k=10)
             candidate_negatives = [doc_id for doc_id in doc_ids if doc_id not in qrels[qid]]
             if candidate_negatives:
