@@ -73,6 +73,15 @@ def main():
         # Retrieve top BM25 results (list of tuples: (doc_id, bm25_score)).
         docs, scores = search_bm25(query_text, retriever, doc_ids, top_k=args.top_k)
         candidate_doc_ids = [doc_id for doc_id in docs]
+
+        # Debug: Print relevant document IDs from qrels for this query.
+        relevant_doc_ids = list(qrels.get(qid, {}).keys())
+        logger.info("Query ID: %s", qid)
+        logger.info("Relevant document IDs from qrels: %s", relevant_doc_ids)
+        logger.info("BM25 candidate document IDs: %s", candidate_doc_ids)
+        common_docs = set(relevant_doc_ids).intersection(set(candidate_doc_ids))
+        logger.info("Relevant docs present in BM25 candidates: %s", list(common_docs))
+
         candidate_docs = [corpus[doc_id]['text'] for doc_id in candidate_doc_ids]
 
         # Reranker scoring: process in batches.
@@ -91,6 +100,8 @@ def main():
                     attention_mask=attention_mask,
                     return_dict=True
                 )
+
+                print("Logits sample:", output["logits"][:3])
             # Get scores from the model's logits.
             batch_scores = output["logits"].squeeze(-1).tolist()
             # If batch size is 1, ensure batch_scores is a list.
@@ -100,6 +111,13 @@ def main():
 
         # Map candidate document IDs to their reranker scores.
         doc_score_mapping = {doc_id: score for doc_id, score in zip(candidate_doc_ids, scores)}
+
+        # Debug: Print ranked list from model (document ID: score) sorted by score descending.
+        ranked_list = sorted(doc_score_mapping.items(), key=lambda x: x[1], reverse=True)
+        logger.info("Ranked list from model (document ID: score):")
+        for doc_id, score in ranked_list:
+            logger.info("    %s: %f", doc_id, score)
+
         reranked_results[qid] = doc_score_mapping
 
     # 3. Evaluate the reranked results.

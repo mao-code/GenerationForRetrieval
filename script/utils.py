@@ -122,8 +122,7 @@ def beir_evaluate_custom(qrels: dict, results: dict, k_values: list, metric: str
 
 
 def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict,
-                            tokenizer, device, batch_size=2, eval_accumulation_steps=1,
-                            k_values=[1, 3, 5, 10]):
+                            tokenizer, device, batch_size=2, k_values=[1, 3, 5, 10]):
     """
     For each query, scores all documents in the corpus using the loaded model.
     Returns evaluation metrics (NDCG, MAP, Recall, Precision, MRR, etc.).
