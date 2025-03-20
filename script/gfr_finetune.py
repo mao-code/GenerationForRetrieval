@@ -22,7 +22,7 @@ from beir import util
 from beir.datasets.data_loader import GenericDataLoader
 import pytrec_eval
 
-from script.utils import load_dataset, evaluate_full_retrieval, build_bm25_index
+from script.utils import load_dataset, evaluate_full_retrieval, build_bm25_index, search_bm25
 
 #############################################
 # Helper Functions
@@ -42,8 +42,8 @@ def prepare_training_samples_bce(corpus: dict, queries: dict, qrels: dict, hard_
         for qid in tqdm(qrels, desc="Precomputing hard negatives"):
             query_text = queries[qid]
             tokenized_query = bm25s.tokenize(query_text)
-            results, _ = bm25_index.retrieve(tokenized_query, k=10)
-            candidate_negatives = [doc_id for doc_id in results[0] if doc_id not in qrels[qid]]
+            doc_ids, scores = search_bm25(query_text, bm25_index, bm25_doc_ids, top_k=10)
+            candidate_negatives = [doc_id for doc_id in doc_ids if doc_id not in qrels[qid]]
             if candidate_negatives:
                 hard_negatives[qid] = candidate_negatives  # store list of negatives
             else:
