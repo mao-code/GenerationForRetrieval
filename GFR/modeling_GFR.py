@@ -415,7 +415,7 @@ class GFRMambaMixer(nn.Module):
         self, hidden_states: torch.Tensor, cache_params: GFRHybridDynamicCache = None, attention_mask=None
     ):
         batch_size, seq_len, _ = hidden_states.shape
-        use_precomputed_states = cache_params is not None and cache_params.has_previous_state and seq_len == 1
+        use_precomputed_states = cache_params is not None and cache_params.has_previous_state# and seq_len == 1
 
         # 1. Gated linear projection (2 gates here, so 2*intermidiate_size)
         # Swaps dimensions 1 and 2
@@ -465,8 +465,28 @@ class GFRMambaMixer(nn.Module):
         time_proj_bias = self.dt_proj_bias.float() if self.dt_proj_bias is not None else None
         scan_outputs = torch.empty((batch_size, 0, seq_len), device=hidden_states.device, dtype=hidden_states.dtype)
 
-        if use_precomputed_states:
+        print("mamba heads", self.n_mamba_heads)
+        if use_precomputed_states and True:
             for n in range(self.n_mamba_heads):
+                print("hidden_states", hidden_states.shape)
+                scan_outputs_ = selective_state_update(
+                    cache_params.ssm_states[self.layer_idx][:, n],
+                    hidden_states[n],
+                    discrete_time_step[n],
+                    A[n],
+                    B[n],
+                    C[n],
+                    self.D[n],
+                    gate[n],
+                    time_proj_bias[n],
+                    dt_softplus=True,
+                ).unsqueeze(-1)
+                print(scan_outputs.shape)
+                print(scan_outputs_.shape)
+                scan_outputs = torch.cat((scan_outputs, scan_outputs_), dim=1)
+        elif use_precomputed_states:
+            for n in range(self.n_mamba_heads):
+                print("hidden_states", hidden_states.shape)
                 scan_outputs_ = selective_state_update(
                     cache_params.ssm_states[self.layer_idx][:, n],
                     hidden_states[n, ..., 0],
@@ -479,6 +499,8 @@ class GFRMambaMixer(nn.Module):
                     time_proj_bias[n],
                     dt_softplus=True,
                 ).unsqueeze(-1)
+                print(scan_outputs.shape)
+                print(scan_outputs_.shape)
                 scan_outputs = torch.cat((scan_outputs, scan_outputs_), dim=1)
 
         else:
@@ -500,6 +522,9 @@ class GFRMambaMixer(nn.Module):
                     delta_softplus=True,
                     return_last_state=True,
                 )
+                print("www")
+                print(scan_outputs.shape)
+                print(scan_outputs_.shape)
                 scan_outputs = torch.cat((scan_outputs, scan_outputs_), dim=1).contiguous()
                 ssm_state = torch.cat((ssm_state, ssm_state_.unsqueeze(1)), dim=1)
             if ssm_state is not None and cache_params is not None:
@@ -1121,7 +1146,10 @@ class GFRModel(GFRPreTrainedModel):
 
         batch_size, seq_len, _ = hidden_states.shape
         if cache_position is None:
-            cache_position = torch.arange(seq_len, device=hidden_states.device)
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            cache_position = torch.arange(
+                past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
+            )
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
@@ -1131,6 +1159,7 @@ class GFRModel(GFRPreTrainedModel):
             )
 
         # Build (or update) the causal mask as needed.
+        
         causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position)
 
         all_hidden_states = () if output_hidden_states else None
@@ -1338,6 +1367,7 @@ class GFRModel(GFRPreTrainedModel):
         
     # Copied from transformers.models.jamba.modeling_jamba.JambaModel._update_causal_mask
     def _update_causal_mask(self, attention_mask, input_tensor, cache_position):
+        print("cache_position", cache_position)
         if self.config._attn_implementation == "flash_attention_2":
             if attention_mask is not None and 0.0 in attention_mask:
                 return attention_mask
@@ -1346,7 +1376,9 @@ class GFRModel(GFRPreTrainedModel):
         dtype, device = input_tensor.dtype, input_tensor.device
         min_dtype = torch.finfo(dtype).min
         sequence_length = input_tensor.shape[1]
-        target_length = cache_position[-1] + 1
+        target_length = attention_mask.shape[-1]
+
+        print("sequence_length", sequence_length, target_length)
 
         causal_mask = torch.full((sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device)
         if sequence_length != 1:
@@ -1619,6 +1651,7 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
+        precompute: bool = False,
         **kwargs,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         """
@@ -1642,20 +1675,23 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
             **kwargs,
         )
         hidden_states = outputs.last_hidden_state  # (batch, seq_len, hidden_size)
+        if precompute:
+            logits = 0
+        else:
 
-        # Compute the position of [SCORE] for each sequence
-        # Sum of attention_mask gives the unpadded length; [SCORE] is at length - 1
-        score_positions = attention_mask.sum(dim=1) - 1  # Shape: (batch_size,)
+            # Compute the position of [SCORE] for each sequence
+            # Sum of attention_mask gives the unpadded length; [SCORE] is at length - 1
+            score_positions = attention_mask.sum(dim=1) - 1  # Shape: (batch_size,)
 
-        # Ensure positions are within bounds
-        score_positions = torch.clamp(score_positions, min=0, max=hidden_states.size(1) - 1)
+            # Ensure positions are within bounds
+            score_positions = torch.clamp(score_positions, min=0, max=hidden_states.size(1) - 1)
 
-        # Extract the hidden state of [SCORE] for each sequence in the batch
-        batch_indices = torch.arange(hidden_states.size(0))  # [0, 1, 2, ..., batch_size-1]
-        score_hidden = hidden_states[batch_indices, score_positions]  # Shape: (batch_size, hidden_size)
+            # Extract the hidden state of [SCORE] for each sequence in the batch
+            batch_indices = torch.arange(hidden_states.size(0))  # [0, 1, 2, ..., batch_size-1]
+            score_hidden = hidden_states[batch_indices, score_positions]  # Shape: (batch_size, hidden_size)
 
-        # Pass the [SCORE] hidden state through a scoring head
-        logits = self.score_head(score_hidden)
+            # Pass the [SCORE] hidden state through a scoring head
+            logits = self.score_head(score_hidden)
 
         # TODO: Calculate the loss (point-wise, pair-wise, list-wise) based on the labels.
         loss = None
