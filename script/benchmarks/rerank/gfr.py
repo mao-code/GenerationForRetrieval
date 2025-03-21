@@ -142,13 +142,6 @@ def main():
 
         # Map candidate document IDs to their reranker scores.
         doc_score_mapping = {doc_id: score for doc_id, score in zip(candidate_doc_ids, scores)}
-
-        # Debug: Print ranked list from model (document ID: score) sorted by score descending.
-        ranked_list = sorted(doc_score_mapping.items(), key=lambda x: x[1], reverse=True)
-        logger.info("Ranked list from model (document ID: score):")
-        for doc_id, score in ranked_list:
-            logger.info("    %s: %f", doc_id, score)
-
         reranked_results[qid] = doc_score_mapping
 
     # 3. Evaluate the reranked results.
