@@ -3,9 +3,10 @@ import argparse
 import logging
 import torch
 from tqdm import tqdm
+import time
 
 # Import BEIR and BM25 utilities.
-from script.utils import load_dataset, beir_evaluate # build_bm25_index, search_bm25
+from script.utils import load_dataset, beir_evaluate, beir_evaluate_custom # build_bm25_index, search_bm25
 
 # Import Pyserini for retrieval.
 from pyserini.search.lucene import LuceneSearcher
@@ -37,7 +38,8 @@ def main():
         handlers=[
             logging.StreamHandler(),
             logging.FileHandler(args.log_file, mode="w")
-        ]
+        ],
+        force=True
     )
     logger = logging.getLogger()
 
@@ -87,6 +89,10 @@ def main():
     # Each query id will map to a dict of {doc_id: reranker_score}.
     reranked_results = {}
 
+    # Variables for measuring inference time.
+    total_inference_time = 0.0
+    total_docs_processed = 0
+
     logger.info("Retrieving BM25 top documents and reranking...")
     # For each query, retrieve BM25 candidates and then rerank using the reranker model.
     for qid, query_text in tqdm(queries.items(), desc="Processing queries"):
@@ -96,11 +102,11 @@ def main():
 
         # Debug: Print relevant document IDs from qrels for this query.
         relevant_doc_ids = list(qrels.get(qid, {}).keys())
-        logger.info("Query ID: %s", qid)
-        logger.info("Relevant document IDs from qrels: %s", relevant_doc_ids)
-        logger.info("Retrieved document IDs: %s", candidate_doc_ids)
+        # logger.info("Query ID: %s", qid)
+        # logger.info("Relevant document IDs from qrels: %s", relevant_doc_ids)
+        # logger.info("Retrieved document IDs: %s", candidate_doc_ids)
         common_docs = set(relevant_doc_ids).intersection(set(candidate_doc_ids))
-        logger.info("Relevant docs present in retrieved candidates: %s", list(common_docs))
+        # logger.info("Relevant docs present in retrieved candidates: %s", list(common_docs))
         logger.info("Percentage of relevant docs in retrieved candidates: %.2f%%", len(common_docs) / len(relevant_doc_ids) * 100)
 
         # Get the texts of the candidate documents from the corpus.
@@ -115,6 +121,8 @@ def main():
             input_ids = input_ids.to(device)
             token_type_ids = token_type_ids.to(device)
             attention_mask = attention_mask.to(device)
+
+            start_time = time.time()
             with torch.no_grad():
                 output = model(
                     input_ids=input_ids,
@@ -122,6 +130,9 @@ def main():
                     attention_mask=attention_mask,
                     return_dict=True
                 )
+            elapsed = time.time() - start_time
+            total_inference_time += elapsed
+            total_docs_processed += len(batch_docs)
 
             # Get scores from the model's logits.
             batch_scores = output["logits"].squeeze(-1).tolist()
@@ -143,6 +154,12 @@ def main():
     # 3. Evaluate the reranked results.
     logger.info("Evaluating reranked results...")
     ndcg, _map, recall, precision = beir_evaluate(qrels, reranked_results, args.k_values, ignore_identical_ids=True)
+    mrr = beir_evaluate_custom(qrels, reranked_results, args.k_values, metric="mrr")
+    top_k_accuracy = beir_evaluate_custom(qrels, reranked_results, args.k_values, metric="top_k_accuracy")
+
+    # Calculate average inference time and throughput.
+    avg_inference_time_ms = (total_inference_time / total_docs_processed) * 1000
+    throughput_docs_per_sec = total_docs_processed / total_inference_time
 
     # 4. Log the results.
     logger.info("Final Evaluation Metrics:")
@@ -150,6 +167,10 @@ def main():
     logger.info(f"MAP: {_map}")
     logger.info(f"Recall: {recall}")
     logger.info(f"Precision: {precision}")
+    logger.info(f"MRR: {mrr}")
+    logger.info(f"Top_K_Accuracy: {top_k_accuracy}")
+    logger.info(f"Avg Inference Time (ms): {avg_inference_time_ms}")
+    logger.info(f"Throughput (docs/sec): {throughput_docs_per_sec}")
 
 if __name__ == "__main__":
     main()
@@ -161,6 +182,6 @@ if __name__ == "__main__":
     --split test \
     --model_checkpoint ./gfr_finetune_final_200m_msmarco \
     --log_file gfr_200m_msmarco_test_results.log \
-    --retrieval_type sparse
+    --retrieval_type sparse \
     --index_name msmarco-v1-passage
     """

@@ -28,12 +28,12 @@ def load_dataset(dataset: str, split: str):
     corpus, queries, qrels = GenericDataLoader(data_folder=data_path).load(split=split)
     
     # Prefix each doc_id in corpus, and update queries and qrels accordingly.
-    new_corpus = {f"{dataset}_{doc_id}": content for doc_id, content in corpus.items()}
-    new_queries = {f"{dataset}_{qid}": query for qid, query in queries.items()}
-    new_qrels = {f"{dataset}_{qid}": {f"{dataset}_{doc_id}": score for doc_id, score in rels.items()}
-                 for qid, rels in qrels.items()}
+    # new_corpus = {f"{dataset}_{doc_id}": content for doc_id, content in corpus.items()}
+    # new_queries = {f"{dataset}_{qid}": query for qid, query in queries.items()}
+    # new_qrels = {f"{dataset}_{qid}": {f"{dataset}_{doc_id}": score for doc_id, score in rels.items()}
+    #              for qid, rels in qrels.items()}
     
-    return new_corpus, new_queries, new_qrels
+    return corpus, queries, qrels
 
 
 def build_bm25_index(corpus: dict):
@@ -109,7 +109,6 @@ def beir_evaluate(qrels: dict, results: dict, k_values: list, ignore_identical_i
         recall[f"Recall@{k}"] = round(recall[f"Recall@{k}"] / num_queries, 5)
         precision[f"P@{k}"] = round(precision[f"P@{k}"] / num_queries, 5)
     return ndcg, _map, recall, precision
-
 
 def beir_evaluate_custom(qrels: dict, results: dict, k_values: list, metric: str):
     """Dummy custom evaluation metrics (e.g., MRR or top-K accuracy)."""

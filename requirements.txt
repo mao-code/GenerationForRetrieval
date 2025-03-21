@@ -1,11 +1,13 @@
 beir
 accelerate
 transformers
+
 causal-conv1d # find your causal-conv1d version wheel here: https://github.com/Dao-AILab/causal-conv1d/releases (e.g. causal_conv1d-1.5.0.post8+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl)
 mamba-ssm
 
 torchinfo
 wandb
 sentencepiece
-# bm25s
-pyserini
+bm25s
+pyserini # please follow the instructions here from Pyserini to install the environment (need to create conda environment): https://github.com/castorini/pyserini/blob/master/docs/installation.md
+faiss-cpu
