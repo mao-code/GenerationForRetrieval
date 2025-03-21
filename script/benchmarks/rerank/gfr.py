@@ -5,7 +5,11 @@ import torch
 from tqdm import tqdm
 
 # Import BEIR and BM25 utilities.
-from script.utils import load_dataset, build_bm25_index, search_bm25, beir_evaluate
+from script.utils import load_dataset, beir_evaluate # build_bm25_index, search_bm25
+
+# Import Pyserini for retrieval.
+from pyserini.search.lucene import LuceneSearcher
+from pyserini.search.faiss import FaissSearcher
 
 # Import the tokenizer and the reranker model.
 from transformers import LlamaTokenizer
@@ -21,6 +25,8 @@ def main():
     parser.add_argument("--top_k", type=int, default=100, help="Number of top BM25 results to retrieve per query")
     parser.add_argument("--k_values", type=int, nargs='+', default=[1, 3, 5, 10],
                         help="List of k values for computing evaluation metrics (e.g., NDCG, MAP)")
+    parser.add_argument("--retrieval_type", type=str, default="sparse", choices=["sparse", "dense"], help="Type of retrieval to use")
+    parser.add_argument("--index_name", type=str, default=None, help="Specific index name to use; if None, use default based on retrieval_type")
     args = parser.parse_args()
 
     # Set up logging to write both to console and to a file.
@@ -38,14 +44,28 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    # 1. Load the testing dataset.
+    # Load the testing dataset.
     logger.info(f"Loading dataset '{args.dataset}' with split '{args.split}'...")
     corpus, queries, qrels = load_dataset(args.dataset, split=args.split)
 
-    # 2. Build BM25 index on the test corpus.
-    logger.info("Building BM25 index on test corpus...")
-    retriever, doc_ids = build_bm25_index(corpus)
-
+    # 2. Initialize the searcher based on retrieval type.
+    # For index names: https://github.com/castorini/pyserini/blob/master/docs/prebuilt-indexes.md
+    if args.index_name is not None:
+        index_name = args.index_name
+    elif args.retrieval_type == "sparse":
+        index_name = 'msmarco-v1-passage'  # Default sparse index for MS MARCO passages
+    elif args.retrieval_type == "dense":
+        index_name = 'msmarco-v1-passage.tct_colbert-v2-hnp'  # Default dense index for MS MARCO passages
+    else:
+        raise ValueError("Invalid retrieval_type")
+    
+    if args.retrieval_type == "sparse":
+        searcher = LuceneSearcher.from_prebuilt_index(index_name)
+    elif args.retrieval_type == "dense":
+        searcher = FaissSearcher.from_prebuilt_index(index_name)
+    else:
+        raise ValueError("Invalid retrieval_type")
+    
     # Load the tokenizer.
     logger.info("Loading tokenizer...")
     tokenizer = LlamaTokenizer.from_pretrained("huggyllama/llama-7b")
@@ -70,18 +90,20 @@ def main():
     logger.info("Retrieving BM25 top documents and reranking...")
     # For each query, retrieve BM25 candidates and then rerank using the reranker model.
     for qid, query_text in tqdm(queries.items(), desc="Processing queries"):
-        # Retrieve top BM25 results (list of tuples: (doc_id, bm25_score)).
-        docs, scores = search_bm25(query_text, retriever, doc_ids, top_k=args.top_k)
-        candidate_doc_ids = [doc_id for doc_id in docs]
+        # Retrieve top documents using Pyserini.
+        hits = searcher.search(query_text, k=args.top_k)
+        candidate_doc_ids = [hit.docid for hit in hits]
 
         # Debug: Print relevant document IDs from qrels for this query.
         relevant_doc_ids = list(qrels.get(qid, {}).keys())
         logger.info("Query ID: %s", qid)
         logger.info("Relevant document IDs from qrels: %s", relevant_doc_ids)
-        logger.info("BM25 candidate document IDs: %s", candidate_doc_ids)
+        logger.info("Retrieved document IDs: %s", candidate_doc_ids)
         common_docs = set(relevant_doc_ids).intersection(set(candidate_doc_ids))
-        logger.info("Relevant docs present in BM25 candidates: %s", list(common_docs))
+        logger.info("Relevant docs present in retrieved candidates: %s", list(common_docs))
+        logger.info("Percentage of relevant docs in retrieved candidates: %.2f%%", len(common_docs) / len(relevant_doc_ids) * 100)
 
+        # Get the texts of the candidate documents from the corpus.
         candidate_docs = [corpus[doc_id]['text'] for doc_id in candidate_doc_ids]
 
         # Reranker scoring: process in batches.
@@ -101,10 +123,8 @@ def main():
                     return_dict=True
                 )
 
-                print("Logits sample:", output["logits"][:3])
             # Get scores from the model's logits.
             batch_scores = output["logits"].squeeze(-1).tolist()
-            # If batch size is 1, ensure batch_scores is a list.
             if isinstance(batch_scores, float):
                 batch_scores = [batch_scores]
             scores.extend(batch_scores)
@@ -135,9 +155,12 @@ if __name__ == "__main__":
     main()
 
     """
+    Example usage:
     python -m script.benchmarks.rerank.gfr \
     --dataset msmarco \
     --split test \
     --model_checkpoint ./gfr_finetune_final_200m_msmarco \
-    --log_file gfr_200m_msmarco_test_results.log
+    --log_file gfr_200m_msmarco_test_results.log \
+    --retrieval_type sparse
+    --index_name msmarco-v1-passage
     """

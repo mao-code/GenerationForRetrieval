@@ -7,4 +7,5 @@ mamba-ssm
 torchinfo
 wandb
 sentencepiece
-bm25s
+# bm25s
+pyserini

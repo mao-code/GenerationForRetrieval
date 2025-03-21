@@ -63,7 +63,7 @@ def search_bm25(query: str, retriever, doc_ids, top_k: int = 5):
         List of tuples in the format (doc_id, score) for the top n documents.
     """
     # Tokenize the query
-    tokenized_query = bm25s.tokenize(query, stopwords="en")[0]
+    tokenized_query = bm25s.tokenize([query], stopwords="en")[0]
     
     # Retrieve indices and scores
     # Get top-k results as a tuple of (doc ids, scores). Both are arrays of shape (n_queries, k).
@@ -77,6 +77,7 @@ def search_bm25(query: str, retriever, doc_ids, top_k: int = 5):
 def beir_evaluate(qrels: dict, results: dict, k_values: list, ignore_identical_ids: bool = True):
     """Evaluates ranking results using BEIR's pytrec_eval."""
     if ignore_identical_ids:
+        # For evaluation, we ignore identical query and document ids (default), please explicitly set ``ignore_identical_ids=False`` to ignore this."
         for qid, rels in results.items():
             for pid in list(rels.keys()):
                 if qid == pid:
