@@ -307,7 +307,7 @@ if __name__ == "__main__":
     """
     python -m script.gfr_pretrain \
         --batch_size 4 \
-        --grad_accumulation_steps 8 \
+        --grad_accumulation_steps 32 \
         --target_tokens 10000000000 \
         --num_train_epochs 1 \
         --per_device_eval_batch_size 2 \
@@ -315,10 +315,10 @@ if __name__ == "__main__":
         --eval_size 100 \
         --max_seq_length 1024 \
         --num_blocks 3 \
-        --output_dir ./gfr_pretrain_finewebedu \
-        --save_model_path gfr_pretrain_causal_lm_final_finewebedu_v2_200m \
+        --output_dir ./gfr_pretrain_finewebedu_500m \
+        --save_model_path gfr_pretrain_causal_lm_final_finewebedu_v2_500m \
         --run_name "fineweb10B_model500M" \
         --wandb_project gfr_pretrain_causallm \
-        --wandb_entity your_group_name \
+        --wandb_entity nlp-maocode \
         --wandb_api_key your_wandb_api_key 
     """
