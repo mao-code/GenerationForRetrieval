@@ -11,3 +11,5 @@ sentencepiece
 bm25s
 pyserini # please follow the instructions here from Pyserini to install the environment (need to create conda environment): https://github.com/castorini/pyserini/blob/master/docs/installation.md
 faiss-cpu
+
+tabulate

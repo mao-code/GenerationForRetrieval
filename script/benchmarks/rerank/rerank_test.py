@@ -103,7 +103,7 @@ def main():
             model.eval()
         elif model_type == "standard":
             logger.info(f"Loading standard CrossEncoder model: {model_checkpoint}")
-            model = CrossEncoder(model_checkpoint, device=device)
+            model = CrossEncoder(model_checkpoint, device=device, automodel_args={"torch_dtype": "auto"}, trust_remote_code=True)
         else:
             raise ValueError(f"Invalid model type: {model_type}. Must be 'gfr' or 'standard'.")
 
@@ -118,7 +118,7 @@ def main():
         total_hits_rate = 0.0
 
         logger.info(f"Using {args.retrieval_type} to retrieve top documents and reranking...")
-        for qid, query_text in tqdm(queries.items(), desc="Processing queries"):
+        for qid, query_text in tqdm(queries.items(), desc="Processing queries", leave=False):
             # Retrieve top documents
             hits = searcher.search(query_text, k=args.top_k)
             candidate_doc_ids = [hit.docid for hit in hits]
@@ -160,7 +160,7 @@ def main():
                 # Standard CrossEncoder reranking
                 pairs = [(query_text, doc) for doc in candidate_docs]
                 start_time = time.time()
-                scores = model.predict(pairs, batch_size=args.batch_size)
+                scores = model.predict(pairs, batch_size=args.batch_size, max_length=1024)
                 elapsed = time.time() - start_time
                 total_inference_time += elapsed
                 total_docs_processed += len(candidate_docs)
@@ -235,7 +235,7 @@ if __name__ == "__main__":
     python -m script.benchmarks.rerank.rerank_test \
     --dataset msmarco \
     --split test \
-    --models gfr:/path/to/gfr_model standard:cross-encoder/ms-marco-MiniLM-L-12-v2 standard:cross-encoder/ms-marco-MiniLM-L-12-v2 standard:mixedbread-ai/mxbai-rerank-large-v1 standard:jinaai/jina-reranker-v2-base-multilingual standard:BAAI/bge-reranker-v2-m3 \
+    --models gfr:./gfr_finetune_final_200m_msmarco standard:cross-encoder/ms-marco-MiniLM-L-12-v2 standard:mixedbread-ai/mxbai-rerank-large-v1 standard:jinaai/jina-reranker-v2-base-multilingual standard:BAAI/bge-reranker-v2-m3 \
     --log_file rerank_results.log \
     --batch_size 16 \
     --top_k 100 \
