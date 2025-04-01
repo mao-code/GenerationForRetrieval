@@ -10,7 +10,7 @@ from beir.retrieval import models
 from beir.retrieval.search.dense import DenseRetrievalExactSearch as DRES
 
 # Import your custom ZambaEvaluator
-from zamba.zamba_evaluator import ZambaEvaluator
+from script.simple_test.zamba.zamba_evaluator import ZambaEvaluator
 
 # Setup logging
 logging.basicConfig(

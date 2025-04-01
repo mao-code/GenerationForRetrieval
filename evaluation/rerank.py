@@ -8,7 +8,8 @@ from tabulate import tabulate  # For pretty-printing the comparison table
 import csv
 
 # Import BEIR and BM25 utilities
-from script.utils import load_dataset, beir_evaluate, beir_evaluate_custom
+from utils import load_dataset
+from evaluation.utils import beir_evaluate, beir_evaluate_custom
 
 # Import Pyserini for retrieval.
 from pyserini.search.lucene import LuceneSearcher
@@ -212,8 +213,8 @@ def main():
         logger.info(f"MAP: {_map}")
         logger.info(f"Recall: {recall}")
         logger.info(f"Precision: {precision}")
-        logger.info(f"MRR(dummy now): {mrr}")
-        logger.info(f"Top_K_Accuracy(dummy now): {top_k_accuracy}")
+        logger.info(f"MRR: {mrr}")
+        logger.info(f"Top_K_Accuracy: {top_k_accuracy}")
         logger.info(f"Avg Inference Time (ms): {avg_inference_time_ms:.2f}")
         logger.info(f"Throughput (docs/sec): {throughput_docs_per_sec:.2f}")
 
@@ -251,7 +252,7 @@ if __name__ == "__main__":
 
     """
     Example usage:
-    python -m script.benchmarks.rerank.rerank_test \
+    python -m evaluation.rerank \
     --dataset msmarco \
     --split test \
     --models gfr:./gfr_finetune_final_200m_msmarco standard:cross-encoder/ms-marco-MiniLM-L-12-v2 standard:mixedbread-ai/mxbai-rerank-large-v1 standard:jinaai/jina-reranker-v2-base-multilingual standard:BAAI/bge-reranker-v2-m3 \

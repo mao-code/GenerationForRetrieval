@@ -3,7 +3,8 @@ import logging
 import torch
 from transformers import LlamaTokenizer
 from GFR.modeling_GFR import GFRForSequenceScoring
-from script.utils import load_dataset, evaluate_full_retrieval
+from utils import load_dataset
+from script.utils import evaluate_full_retrieval
 
 logging.basicConfig(
     level=logging.INFO,

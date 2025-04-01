@@ -20,9 +20,10 @@ import wandb
 # BEIR imports.
 from beir import util
 from beir.datasets.data_loader import GenericDataLoader
-import pytrec_eval
 
-from script.utils import load_dataset, evaluate_full_retrieval, build_bm25_index, search_bm25
+from utils import load_dataset
+from script.utils import evaluate_full_retrieval, build_bm25_index, search_bm25
+from dataset import DocumentRankingDataset
 
 #############################################
 # Helper Functions
@@ -84,38 +85,6 @@ def subsample_dev_set(queries_dev: dict, qrels_dev: dict, sample_percentage: flo
     sampled_qrels = {qid: qrels_dev[qid] for qid in sampled_ids if qid in qrels_dev}
     
     return sampled_queries, sampled_qrels
-
-#############################################
-# PyTorch Dataset and Data Collator for Trainer
-#############################################
-
-class DocumentRankingDataset(Dataset):
-    def __init__(self, samples, tokenizer, model):
-        # samples is a list of tuples: (query_text, doc_text, label)
-        self.samples = samples
-        self.tokenizer = tokenizer
-        self.model = model
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        # Extract query, doc, and label from the sample
-        query, doc, label = self.samples[idx]
-
-        # Tokenize and prepare input tensors
-        # Assuming model.prepare_input takes lists of docs and queries
-        input_ids, token_type_ids, attention_mask = self.model.prepare_input(
-            [doc], [query], self.tokenizer
-        )
-
-        # Return a dictionary with preprocessed tensors and label
-        return {
-            "input_ids": input_ids.squeeze(0),  # Remove batch dimension
-            "token_type_ids": token_type_ids.squeeze(0),
-            "attention_mask": attention_mask.squeeze(0),
-            "labels": torch.tensor(label, dtype=torch.float32)  # Use "labels" for Trainer
-        }
     
 #############################################
 # Custom Trainer subclass to override compute_loss
@@ -132,10 +101,6 @@ class DocumentRankingTrainer(Trainer):
         logits = outputs["logits"].view(-1)
         loss = self.loss_fn(logits, labels)
         return (loss, outputs) if return_outputs else loss
-
-#############################################
-# Main Finetuning Script using Trainer
-#############################################
 
 def main():
     parser = argparse.ArgumentParser()
