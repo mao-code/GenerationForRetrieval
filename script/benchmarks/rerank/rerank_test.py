@@ -5,6 +5,7 @@ import torch
 from tqdm import tqdm
 import time
 from tabulate import tabulate  # For pretty-printing the comparison table
+import csv
 
 # Import BEIR and BM25 utilities
 from script.utils import load_dataset, beir_evaluate, beir_evaluate_custom
@@ -103,7 +104,15 @@ def main():
             model.eval()
         elif model_type == "standard":
             logger.info(f"Loading standard CrossEncoder model: {model_checkpoint}")
-            model = CrossEncoder(model_checkpoint, device=device, automodel_args={"torch_dtype": "auto"}, trust_remote_code=True)
+            model = CrossEncoder(
+                model_checkpoint, 
+                device=device, 
+                automodel_args={
+                    "torch_dtype": "auto",
+                    "attn_implementation": "eager"  # Explicitly disable Flash Attention
+                }, 
+                trust_remote_code=True
+            )
         else:
             raise ValueError(f"Invalid model type: {model_type}. Must be 'gfr' or 'standard'.")
 
@@ -173,8 +182,8 @@ def main():
         # Evaluate reranked results
         logger.info("Evaluating reranked results...")
         ndcg, _map, recall, precision = beir_evaluate(qrels, reranked_results, args.k_values, ignore_identical_ids=True)
-        # mrr = beir_evaluate_custom(qrels, reranked_results, args.k_values, metric="mrr")
-        # top_k_accuracy = beir_evaluate_custom(qrels, reranked_results, args.k_values, metric="top_k_accuracy")
+        mrr = beir_evaluate_custom(qrels, reranked_results, args.k_values, metric="mrr")
+        top_k_accuracy = beir_evaluate_custom(qrels, reranked_results, args.k_values, metric="top_k_accuracy")
 
         # Calculate performance metrics
         avg_inference_time_ms = (total_inference_time / total_docs_processed) * 1000 if total_docs_processed > 0 else 0
@@ -189,8 +198,8 @@ def main():
             "map": _map,
             "recall": recall,
             "precision": precision,
-            # "mrr": mrr,
-            # "top_k_accuracy": top_k_accuracy,
+            "mrr": mrr,
+            "top_k_accuracy": top_k_accuracy,
             "avg_inference_time_ms": avg_inference_time_ms,
             "throughput_docs_per_sec": throughput_docs_per_sec
         }
@@ -203,8 +212,8 @@ def main():
         logger.info(f"MAP: {_map}")
         logger.info(f"Recall: {recall}")
         logger.info(f"Precision: {precision}")
-        # logger.info(f"MRR(dummy now): {mrr}")
-        # logger.info(f"Top_K_Accuracy(dummy now): {top_k_accuracy}")
+        logger.info(f"MRR(dummy now): {mrr}")
+        logger.info(f"Top_K_Accuracy(dummy now): {top_k_accuracy}")
         logger.info(f"Avg Inference Time (ms): {avg_inference_time_ms:.2f}")
         logger.info(f"Throughput (docs/sec): {throughput_docs_per_sec:.2f}")
 
@@ -219,15 +228,23 @@ def main():
             result["map"].get("MAP@10", "-"),
             result["recall"].get("Recall@10", "-"),
             result["precision"].get("P@10", "-"),
-            # result["mrr"].get("MRR@10", "-"),
-            # result["top_k_accuracy"].get("Accuracy@10", "-")
+            result["mrr"].get("MRR@10", "-"),
+            result["top_k_accuracy"].get("Top_K_Accuracy@10", "-"),
             result["avg_inference_time_ms"],
             result["throughput_docs_per_sec"]
         ]
         comparison_table.append(row)
 
-    headers = ["Model", "NDCG@10", "MAP@10", "Recall@10", "Precision@10", "Avg Inference Time (ms)", "Throughput (docs/sec)"]
+    headers = ["Model", "NDCG@10", "MAP@10", "Recall@10", "Precision@10", "MRR@10", "Top_K_Accuracy@10", "Avg Inference Time (ms)", "Throughput (docs/sec)"]
     logger.info("\n" + tabulate(comparison_table, headers=headers, tablefmt="grid"))
+
+    # --- Save the comparison table to a CSV file ---
+    csv_file = "rerank_comparison_table_gfr.csv"
+    with open(csv_file, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        writer.writerows(comparison_table)
+    logger.info(f"Comparison table saved to {csv_file}")
 
 if __name__ == "__main__":
     main()

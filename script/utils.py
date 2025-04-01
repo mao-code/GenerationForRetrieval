@@ -111,15 +111,67 @@ def beir_evaluate(qrels: dict, results: dict, k_values: list, ignore_identical_i
     return ndcg, _map, recall, precision
 
 def beir_evaluate_custom(qrels: dict, results: dict, k_values: list, metric: str):
-    """Dummy custom evaluation metrics (e.g., MRR or top-K accuracy)."""
-    if metric.lower() in ["mrr", "mrr@k", "mrr_cut"]:
-        avg_mrr = 0.5  # Dummy value
-        return {"MRR": avg_mrr}
-    elif metric.lower() in ["top_k_accuracy", "acc", "accuracy"]:
-        avg_acc = 0.5  # Dummy value
-        return {"Top_K_Accuracy": avg_acc}
-    return {}
+    """
+    Computes custom evaluation metrics.
+    
+    For MRR@K:
+      - For each query, it finds the first relevant document (with a relevance score > 0)
+        within the top K retrieved documents and computes the reciprocal rank (1/rank).
+      - The mean reciprocal rank over all queries is returned for each K.
+    
+    For Top-K Accuracy:
+      - For each query, it checks whether at least one relevant document is present
+        in the top K retrieved documents.
+      - The fraction of queries with at least one relevant document in the top K is returned.
+    """
+    metric = metric.lower()
+    scores = {}
+    
+    if metric in ["mrr", "mrr@k", "mrr_cut"]:
+        # Initialize scores for each k value.
+        for k in k_values:
+            scores[f"MRR@{k}"] = 0.0
+        num_queries = 0
+        for qid in qrels:
+            if qid not in results:
+                continue
+            num_queries += 1
+            # Sort retrieved documents by score (descending)
+            ranked_docs = sorted(results[qid].items(), key=lambda x: x[1], reverse=True)
+            for k in k_values:
+                mrr = 0.0
+                # Look only at the top k retrieved documents.
+                for rank, (doc_id, score) in enumerate(ranked_docs[:k], start=1):
+                    if doc_id in qrels[qid] and qrels[qid][doc_id] > 0:
+                        mrr = 1.0 / rank
+                        break
+                scores[f"MRR@{k}"] += mrr
+        # Average the reciprocal ranks over all queries.
+        for k in k_values:
+            scores[f"MRR@{k}"] = round(scores[f"MRR@{k}"] / num_queries, 5) if num_queries > 0 else 0.0
+        return scores
 
+    elif metric in ["top_k_accuracy", "acc", "accuracy"]:
+        for k in k_values:
+            scores[f"Top_K_Accuracy@{k}"] = 0.0
+        num_queries = 0
+        for qid in qrels:
+            if qid not in results:
+                continue
+            num_queries += 1
+            ranked_docs = sorted(results[qid].items(), key=lambda x: x[1], reverse=True)
+            for k in k_values:
+                hit = 0
+                # Check if any document in the top k is relevant.
+                for doc_id, score in ranked_docs[:k]:
+                    if doc_id in qrels[qid] and qrels[qid][doc_id] > 0:
+                        hit = 1
+                        break
+                scores[f"Top_K_Accuracy@{k}"] += hit
+        for k in k_values:
+            scores[f"Top_K_Accuracy@{k}"] = round(scores[f"Top_K_Accuracy@{k}"] / num_queries, 5) if num_queries > 0 else 0.0
+        return scores
+    return {}
 
 def evaluate_full_retrieval(model, corpus: dict, queries: dict, qrels: dict,
                             tokenizer, device, batch_size=2, k_values=[1, 3, 5, 10]):
