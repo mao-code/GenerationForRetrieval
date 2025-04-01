@@ -873,7 +873,6 @@ class GFRPreTrainedModel(PreTrainedModel):
 
         return config
 
-
 GFR_INPUTS_DOCSTRING = r"""
     Args:
         input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
@@ -1644,24 +1643,29 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
         hidden_states = outputs.last_hidden_state  # (batch, seq_len, hidden_size)
 
         # Compute the position of [SCORE] for each sequence
-        # Sum of attention_mask gives the unpadded length; [SCORE] is at length - 1
-        score_positions = attention_mask.sum(dim=1) - 1  # Shape: (batch_size,)
+        # If pad to the right, sum of attention_mask gives the unpadded length; [SCORE] is at length - 1
+        # score_positions = attention_mask.sum(dim=1) - 1  # Shape: (batch_size,) 
 
         # Ensure positions are within bounds
-        score_positions = torch.clamp(score_positions, min=0, max=hidden_states.size(1) - 1)
+        # score_positions = torch.clamp(score_positions, min=0, max=hidden_states.size(1) - 1)
+
+        # If pad to the left, the position of [SCORE] is at the last position of the sequence
+        score_positions = hidden_states.size(1) - 1
 
         # Extract the hidden state of [SCORE] for each sequence in the batch
         batch_indices = torch.arange(hidden_states.size(0))  # [0, 1, 2, ..., batch_size-1]
         score_hidden = hidden_states[batch_indices, score_positions]  # Shape: (batch_size, hidden_size)
 
         # Pass the [SCORE] hidden state through a scoring head
-        logits = self.score_head(score_hidden)
+        logits = self.score_head(score_hidden).squeeze(-1)  # Shape: (batch_size,)
 
-        # TODO: Calculate the loss (point-wise, pair-wise, list-wise) based on the labels.
         loss = None
+        if labels is not None:
+            loss_fct = nn.BCEWithLogitsLoss()
+            loss = loss_fct(logits, labels.float())
 
         if not return_dict:
-            return (logits,)
+            return (loss, logits)
         else:
             return {
                 "loss": loss,
@@ -1673,23 +1677,13 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
         
     def prepare_input(self, documents: list, queries: list, tokenizer, max_length: int = 1024):
         """
-        Prepares batched inputs for the model by truncating only the document tokens if needed.
-
-        Args:
-            documents (List[str]): List of document texts.
-            queries (List[str]): List of query texts.
-            tokenizer: The tokenizer (must have attributes: cls_token_id, sep_token_id, pad_token_id,
-                    and method: encode()).
-            max_length (int): Maximum sequence length (including special tokens).
-
-        Returns:
-            input_ids_tensor (torch.LongTensor): Tensor of token IDs with shape (batch_size, seq_length).
-            token_type_ids_tensor (torch.LongTensor): Tensor of token type IDs with shape (batch_size, seq_length).
+        Prepares batched inputs for the model by truncating document tokens if needed and dynamically
+        padding to the longest sequence in the batch rather than a fixed max_length.
         """
         input_ids_list = []
         token_type_ids_list = []
-        attention_masks_list = []
         
+        # First, build tokenized sequences without padding.
         for document, query in zip(documents, queries):
             # Encode document and query without adding special tokens.
             doc_ids = tokenizer.encode(document, add_special_tokens=False)
@@ -1697,42 +1691,48 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
             score_id = tokenizer.convert_tokens_to_ids("[SCORE]")
             
             # Calculate available tokens for the document.
-            # Reserve tokens for [CLS] and [SEP] plus the query tokens.
-            reserved_tokens = 2 + len(query_ids)  # [SEP], [SCORE]
+            # Reserve tokens for [SEP] and [SCORE] plus the query tokens.
+            reserved_tokens = 2 + len(query_ids)
             available_doc_length = max_length - reserved_tokens
             
             if available_doc_length < 0:
                 raise ValueError("max_length is too small to accommodate the query and required special tokens.")
             
-            # Truncate document tokens if necessary, leaving the query unchanged.
+            # Truncate document tokens if necessary.
             truncated_doc_ids = doc_ids[:available_doc_length]
             
             # Build the final input sequence: truncated_doc_ids + [SEP] + query_ids + [SCORE].
             input_ids = truncated_doc_ids + [tokenizer.sep_token_id] + query_ids + [score_id]
+            input_ids_list.append(input_ids)
             
             # Create token type IDs:
-            # Token type 0 for document tokens, and [SEP]; 1 for query tokens and [SCORE].
-            doc_part_length = len(truncated_doc_ids) + 2  # account for [SEP] and [SCORE]
-            token_type_ids = [0] * doc_part_length + [1] * len(query_ids)
-            
-            # Pad sequence if necessary.
-            pad_length = max_length - len(input_ids)
-            if pad_length > 0:
-                # For fine-tuning, we pad to the right.
-                input_ids += [tokenizer.pad_token_id] * pad_length
-                token_type_ids += [0] * pad_length
-
-            attention_mask = [1] * len(input_ids[:max_length - pad_length]) + [0] * pad_length
-
-            input_ids_list.append(input_ids)
+            # Token type 0 for document tokens and [SEP], and token type 1 for query tokens and [SCORE].
+            token_type_ids = [0] * (len(truncated_doc_ids) + 1) + [1] * (len(query_ids) + 1)
             token_type_ids_list.append(token_type_ids)
-            attention_masks_list.append(attention_mask)
         
-        # Convert lists to tensors with shape (batch_size, max_length).
-        input_ids_tensor = torch.tensor(input_ids_list, dtype=torch.long)
-        token_type_ids_tensor = torch.tensor(token_type_ids_list, dtype=torch.long)
+        # Determine the maximum sequence length in the batch.
+        batch_max_length = max(len(seq) for seq in input_ids_list)
+        
+        # Pad sequences to the batch maximum length.
+        padded_input_ids_list = [
+            [tokenizer.pad_token_id] * (batch_max_length - len(seq)) + seq
+            for seq in input_ids_list
+        ]
+        padded_token_type_ids_list = [
+            [0] * (batch_max_length - len(seq)) + seq
+            for seq in token_type_ids_list
+        ]
+        attention_masks_list = [
+            [0] * (batch_max_length - len(seq)) + [1] * len(seq)
+            for seq in input_ids_list
+        ]
+        
+        # Convert lists to tensors.
+        input_ids_tensor = torch.tensor(padded_input_ids_list, dtype=torch.long)
+        token_type_ids_tensor = torch.tensor(padded_token_type_ids_list, dtype=torch.long)
         attention_mask_tensor = torch.tensor(attention_masks_list, dtype=torch.long)
         
         return input_ids_tensor, token_type_ids_tensor, attention_mask_tensor
+
 
 __all__ = ["GFRPreTrainedModel", "GFRModel", "GFRForCausalLM", "GFRModelWithTokenTypes", "GFRForSequenceScoring"]

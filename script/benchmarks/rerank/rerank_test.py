@@ -118,7 +118,7 @@ def main():
         total_hits_rate = 0.0
 
         logger.info(f"Using {args.retrieval_type} to retrieve top documents and reranking...")
-        for qid, query_text in tqdm(queries.items(), desc="Processing queries", leave=False):
+        for qid, query_text in tqdm(queries.items(), desc="Processing queries"):
             # Retrieve top documents
             hits = searcher.search(query_text, k=args.top_k)
             candidate_doc_ids = [hit.docid for hit in hits]
@@ -160,7 +160,7 @@ def main():
                 # Standard CrossEncoder reranking
                 pairs = [(query_text, doc) for doc in candidate_docs]
                 start_time = time.time()
-                scores = model.predict(pairs, batch_size=args.batch_size, max_length=1024)
+                scores = model.predict(pairs, batch_size=args.batch_size)
                 elapsed = time.time() - start_time
                 total_inference_time += elapsed
                 total_docs_processed += len(candidate_docs)
@@ -173,8 +173,8 @@ def main():
         # Evaluate reranked results
         logger.info("Evaluating reranked results...")
         ndcg, _map, recall, precision = beir_evaluate(qrels, reranked_results, args.k_values, ignore_identical_ids=True)
-        mrr = beir_evaluate_custom(qrels, reranked_results, args.k_values, metric="mrr")
-        top_k_accuracy = beir_evaluate_custom(qrels, reranked_results, args.k_values, metric="top_k_accuracy")
+        # mrr = beir_evaluate_custom(qrels, reranked_results, args.k_values, metric="mrr")
+        # top_k_accuracy = beir_evaluate_custom(qrels, reranked_results, args.k_values, metric="top_k_accuracy")
 
         # Calculate performance metrics
         avg_inference_time_ms = (total_inference_time / total_docs_processed) * 1000 if total_docs_processed > 0 else 0
@@ -189,8 +189,8 @@ def main():
             "map": _map,
             "recall": recall,
             "precision": precision,
-            "mrr": mrr,
-            "top_k_accuracy": top_k_accuracy,
+            # "mrr": mrr,
+            # "top_k_accuracy": top_k_accuracy,
             "avg_inference_time_ms": avg_inference_time_ms,
             "throughput_docs_per_sec": throughput_docs_per_sec
         }
@@ -203,8 +203,8 @@ def main():
         logger.info(f"MAP: {_map}")
         logger.info(f"Recall: {recall}")
         logger.info(f"Precision: {precision}")
-        logger.info(f"MRR: {mrr}")
-        logger.info(f"Top_K_Accuracy: {top_k_accuracy}")
+        # logger.info(f"MRR(dummy now): {mrr}")
+        # logger.info(f"Top_K_Accuracy(dummy now): {top_k_accuracy}")
         logger.info(f"Avg Inference Time (ms): {avg_inference_time_ms:.2f}")
         logger.info(f"Throughput (docs/sec): {throughput_docs_per_sec:.2f}")
 
@@ -219,12 +219,14 @@ def main():
             result["map"].get("MAP@10", "-"),
             result["recall"].get("Recall@10", "-"),
             result["precision"].get("P@10", "-"),
-            result["mrr"].get("MRR@10", "-"),
-            result["top_k_accuracy"].get("Accuracy@10", "-")
+            # result["mrr"].get("MRR@10", "-"),
+            # result["top_k_accuracy"].get("Accuracy@10", "-")
+            result["avg_inference_time_ms"],
+            result["throughput_docs_per_sec"]
         ]
         comparison_table.append(row)
 
-    headers = ["Model", "NDCG@10", "MAP@10", "Recall@10", "Precision@10", "MRR@10", "Top-K-Accuracy@10"]
+    headers = ["Model", "NDCG@10", "MAP@10", "Recall@10", "Precision@10", "Avg Inference Time (ms)", "Throughput (docs/sec)"]
     logger.info("\n" + tabulate(comparison_table, headers=headers, tablefmt="grid"))
 
 if __name__ == "__main__":

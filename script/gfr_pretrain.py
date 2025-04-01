@@ -165,7 +165,7 @@ def main():
 
     # ========= Load Llama Tokenizer ========= #
     tokenizer = LlamaTokenizer.from_pretrained("huggyllama/llama-7b")
-    tokenizer.padding_side = "left"
+    tokenizer.padding_side = "left" # In causal LM (generation purpose), padding should be on the left to align the real tokens to the right.
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
