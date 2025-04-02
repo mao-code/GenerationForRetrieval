@@ -1,6 +1,6 @@
 {
     "train_batch_size": 1024, 
-    "gradient_accumulation_steps": 8,
+    "gradient_accumulation_steps": 16,
     "zero_optimization": {
         "stage": 2,
         "allgather_partitions": true,
