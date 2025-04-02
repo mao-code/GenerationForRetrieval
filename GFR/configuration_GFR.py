@@ -127,8 +127,8 @@ class GFRConfig(PretrainedConfig):
         self,
         vocab_size=32000,
         tie_word_embeddings=True,
-        hidden_size=3712,           # divisible by 16 (attention heads)
-        intermediate_size=14848,    # 4 * hidden_size
+        hidden_size=1024,           # divisible by 16 (attention heads)
+        intermediate_size=4096,     # 4 * hidden_size
         num_hidden_blocks=3,        # N GFRBlocks,
         num_layers_per_block=8,     # 8 layers per block
         num_attention_heads=16,     # hidden_size // 64
