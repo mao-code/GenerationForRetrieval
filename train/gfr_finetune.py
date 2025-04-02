@@ -32,8 +32,6 @@ def main():
     parser.add_argument("--deepspeed_config", type=str, default="deepspeed_config.json",
                     help="Path to the DeepSpeed configuration file")
     parser.add_argument("--local_rank", type=int, default=-1, help="Local rank for distributed training")
-    parser.add_argument("--model_name", type=str, default="gpt2-medium", 
-                        help="Pre-trained model name (e.g., gpt2-medium, facebook/opt-350m).")
     # Specify multiple datasets.
     parser.add_argument("--datasets", type=str, default="msmarco,nq-train,hotpotqa,fiqa",
                         help="Comma-separated list of dataset names to use for training (e.g., ms_marco,nq,hotpotqa,fiqa).")
@@ -258,13 +256,6 @@ if __name__ == "__main__":
     main()
 
     """
-    model_name list:
-    - openai-community/gpt2-medium
-    - facebook/opt-350m
-    - bigscience/bloom-560m
-    - EleutherAI/pythia-410m
-    - EleutherAI/pythia-1b
-
     Ensure per_device_train_batch_size is a multiple of (1 + n_per_query)
 
     Dense Index names: (FAISS)
@@ -291,26 +282,25 @@ if __name__ == "__main__":
     --quey_encoder "BAAI/bge-base-en-v1.5" \
     
     Example usage:
-    
+
     deepspeed --module finetune.finetune \
     --deepspeed_config deepspeed_config.json \
-    --model_name "EleutherAI/pythia-410m" \
     --use_prepared_data \
     --prepared_data_files "datasets/bge_data/split_1/msmarco_hn_train.jsonl,datasets/bge_data/split_1/nq.jsonl,datasets/bge_data/split/fever.json,datasets/bge_data/split/hotpotqa_pairs.json,datasets/bge_data/split/mr-tydi_english.jsonl,datasets/bge_data/split/nli_simcse.json" \
     --prepared_data_sample_counts "0,0,0,0,0,0" \
     --n_per_query 15 \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 64 \
-    --gradient_accumulation_steps 8 \
-    --lr 2e-5 \
+    --per_device_train_batch_size 128 \
+    --gradient_accumulation_steps 4 \
+    --lr 1e-4 \
     --weight_decay 0.01 \
     --eval_dataset_file "datasets/msmarco_val.jsonl" \
     --per_device_eval_batch_size 16 \
     --eval_accumulation_steps 1 \
     --patience 10 \
     --validate_every_n_steps 100 \
-    --output_dir "./cdr_finetune_ckpts_pythia_410m_bgedata" \
-    --save_model_path "cdr_finetune_final_pythia_410m_bgedata" \
-    --run_name "pythia_410m_mixed_bge_data" \
+    --output_dir "./gfr_finetune_ckpts_210m_bgedata" \
+    --save_model_path "gfr_finetune_ckpts_210m_bgedata_final" \
+    --run_name "210m_bgedata" \
     --gradient_checkpointing"
     """
