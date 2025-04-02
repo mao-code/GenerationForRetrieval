@@ -1142,7 +1142,7 @@ class GFRModel(GFRPreTrainedModel):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
             if self.gradient_checkpointing and self.training:
-                layer_outputs = torch.utils.checkpoint.checkpoint(
+                layer_outputs = self._gradient_checkpointing_func(
                     self.layers[layer_index].__call__,
                     hidden_states,
                     original_hidden_states,

@@ -123,7 +123,7 @@ def main():
     tokenizer = get_tokenizer()
 
     # Load pretrained GFRForCausalLM and extract its backbone.
-    pretrained_causal_model = GFRForCausalLM.from_pretrained(args.pretrained_checkpoint, weight_only=True)
+    pretrained_causal_model = GFRForCausalLM.from_pretrained(args.pretrained_checkpoint, weights_only=True)
     backbone_model = pretrained_causal_model.get_decoder()
     config = pretrained_causal_model.config
 
@@ -132,6 +132,14 @@ def main():
     model.gfr.load_state_dict(backbone_model.state_dict(), strict=False)
     model.resize_token_embeddings(len(tokenizer))
     model.to(device)
+
+    if args.gradient_checkpointing:
+        # Enable gradient checkpointing for memory efficiency.
+        # This is especially useful for large models.
+        logger.info("Enabling gradient checkpointing...")
+        model.gfr.gradient_checkpointing_enable()
+
+
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Number of parameters: {num_params}")
 
