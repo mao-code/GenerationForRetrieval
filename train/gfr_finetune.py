@@ -294,8 +294,8 @@ if __name__ == "__main__":
     --prepared_data_sample_counts "0,0,0,0,0,0" \
     --n_per_query 15 \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 128 \
-    --gradient_accumulation_steps 4 \
+    --per_device_train_batch_size 64 \
+    --gradient_accumulation_steps 8 \
     --lr 1e-4 \
     --weight_decay 0.01 \
     --eval_dataset_file "datasets/msmarco_val.jsonl" \
