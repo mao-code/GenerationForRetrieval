@@ -11,7 +11,7 @@ import random
 from utils import *
 from train.utils import *
 from train.trainer import DocumentRankingTrainer
-from dataset import DocumentRankingDataset
+from dataset.document_ranking import DocumentRankingDataset
 
 from GFR.modeling_GFR import GFRForCausalLM, GFRForSequenceScoring
 from GFR.tokenizer_utils import get_tokenizer
@@ -286,7 +286,7 @@ if __name__ == "__main__":
     
     Example usage:
 
-    deepspeed --module finetune.finetune \
+    deepspeed --module train.gfr_finetune \
     --deepspeed_config deepspeed_config.json \
     --pretrained_checkpoint "gfr_pretrain_causal_lm_final_finewebedu_v2_200m" \
     --use_prepared_data \

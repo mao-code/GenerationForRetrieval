@@ -306,8 +306,8 @@ if __name__ == "__main__":
 
     """
     Example usage:
-    
-    python -m script.gfr_pretrain \
+
+    python -m train.gfr_pretrain \
         --batch_size 4 \
         --grad_accumulation_steps 32 \
         --target_tokens 10000000000 \
