@@ -21,7 +21,7 @@ def main():
     For wandb logging, set the following environment variables:
 
     export WANDB_API_KEY="your_wandb_api_key"
-    export WANDB_PROJECT="cdr_finetuning_document_ranking"
+    export WANDB_PROJECT="gfr_finetuning_document_ranking"
     export WANDB_ENTITY="nlp-maocode"
     """
     
@@ -123,7 +123,7 @@ def main():
     tokenizer = get_tokenizer()
 
     # Load pretrained GFRForCausalLM and extract its backbone.
-    pretrained_causal_model = GFRForCausalLM.from_pretrained(args.pretrained_checkpoint)
+    pretrained_causal_model = GFRForCausalLM.from_pretrained(args.pretrained_checkpoint, weight_only=True)
     backbone_model = pretrained_causal_model.get_decoder()
     config = pretrained_causal_model.config
 
