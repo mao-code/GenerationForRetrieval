@@ -58,7 +58,7 @@ def main():
 
     # Load the dataset
     logger.info(f"Loading dataset '{args.dataset}' with split '{args.split}'...")
-    corpus, queries, qrels = load_dataset(args.dataset, split=args.split)
+    corpus, queries, qrels = load_dataset(logger=logger, dataset=args.dataset, split=args.split)
 
     # Initialize the searcher based on retrieval type
     if args.index_name is not None:
@@ -252,7 +252,7 @@ if __name__ == "__main__":
 
     """
     Example usage:
-    
+
     python -m evaluation.rerank \
     --dataset msmarco \
     --split test \

@@ -315,4 +315,7 @@ if __name__ == "__main__":
     --save_model_path "gfr_finetune_ckpts_210m_bgedata_final" \
     --run_name "210m_bgedata" \
     --gradient_checkpointing
+
+    
+    export HF_HOME="~/../../work/asiis2025/huggingface_cache"    
     """
