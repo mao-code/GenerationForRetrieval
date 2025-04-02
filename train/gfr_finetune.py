@@ -33,6 +33,9 @@ def main():
                     help="Path to the DeepSpeed configuration file")
     parser.add_argument("--local_rank", type=int, default=-1, help="Local rank for distributed training")
     # Specify multiple datasets.
+    parser.add_argument("--pretrained_checkpoint", type=str, 
+                        default="gfr_pretrain_causal_lm_final_finewebedu_v2_200m",
+                        help="Path to the pretrained checkpoint directory.")
     parser.add_argument("--datasets", type=str, default="msmarco,nq-train,hotpotqa,fiqa",
                         help="Comma-separated list of dataset names to use for training (e.g., ms_marco,nq,hotpotqa,fiqa).")
     parser.add_argument("--samples_per_dataset", type=str, default="0,0,0,0",
@@ -285,6 +288,7 @@ if __name__ == "__main__":
 
     deepspeed --module finetune.finetune \
     --deepspeed_config deepspeed_config.json \
+    --pretrained_checkpoint "gfr_pretrain_causal_lm_final_finewebedu_v2_200m" \
     --use_prepared_data \
     --prepared_data_files "datasets/bge_data/split_1/msmarco_hn_train.jsonl,datasets/bge_data/split_1/nq.jsonl,datasets/bge_data/split/fever.json,datasets/bge_data/split/hotpotqa_pairs.json,datasets/bge_data/split/mr-tydi_english.jsonl,datasets/bge_data/split/nli_simcse.json" \
     --prepared_data_sample_counts "0,0,0,0,0,0" \
@@ -302,5 +306,5 @@ if __name__ == "__main__":
     --output_dir "./gfr_finetune_ckpts_210m_bgedata" \
     --save_model_path "gfr_finetune_ckpts_210m_bgedata_final" \
     --run_name "210m_bgedata" \
-    --gradient_checkpointing"
+    --gradient_checkpointing
     """
