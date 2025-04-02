@@ -1530,7 +1530,6 @@ class GFRForCausalLM(GFRPreTrainedModel, GenerationMixin):
         )
         return model_inputs
 
-
 class GFRModelWithTokenTypes(GFRModel):
     def __init__(self, config: "GFRConfig"):
         super().__init__(config)
@@ -1733,6 +1732,5 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
         attention_mask_tensor = torch.tensor(attention_masks_list, dtype=torch.long)
         
         return input_ids_tensor, token_type_ids_tensor, attention_mask_tensor
-
 
 __all__ = ["GFRPreTrainedModel", "GFRModel", "GFRForCausalLM", "GFRModelWithTokenTypes", "GFRForSequenceScoring"]

@@ -172,7 +172,7 @@ def main():
     # ========= Load Model ========= #
     logging.info("Initializing GFR model for pretraining...")
     config = GFRConfig(
-        vocab_size=len(tokenizer),
+        vocab_size=len(tokenizer), # vocab size of the tokenizer
         hidden_size=1024,
         intermediate_size=1024 * 4,
         num_attention_heads=16,
@@ -305,6 +305,8 @@ if __name__ == "__main__":
     main()
 
     """
+    Example usage:
+    
     python -m script.gfr_pretrain \
         --batch_size 4 \
         --grad_accumulation_steps 32 \

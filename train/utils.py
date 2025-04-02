@@ -11,6 +11,16 @@ from pyserini.search.faiss import FaissSearcher
 
 from utils import load_json_file
 
+__all__ = [
+    "process_prepared_sample",
+    "load_prepared_samples",
+    "compute_hard_negatives_for_query",
+    "prepare_training_samples_infonce",
+    "subsample_dev_set",
+    "log_training_config",
+    "prepare_training_samples_bce"
+] 
+
 def process_prepared_sample(sample, n_per_query):
     """
     Convert a single prepared sample (with keys "query", "pos", "neg") into a group of training samples.

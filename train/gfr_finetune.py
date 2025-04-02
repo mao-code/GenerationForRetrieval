@@ -1,124 +1,63 @@
-import os
 import argparse
 import logging
-import time
-import random
 from datetime import datetime
-import pathlib
-import bm25s
 import math
 
 import torch
-import torch.nn as nn
-from torch.utils.data import Dataset
-from tqdm import tqdm
-from transformers import LlamaTokenizer, TrainingArguments, Trainer, EarlyStoppingCallback
-from GFR.configuration_GFR import GFRConfig
-from GFR.modeling_GFR import GFRForCausalLM, GFRForSequenceScoring
+from transformers import TrainingArguments, EarlyStoppingCallback, DataCollatorWithPadding
 import wandb
+import random
 
-# BEIR imports.
-from beir import util
-from beir.datasets.data_loader import GenericDataLoader
-
-from utils import load_dataset
-from script.utils import evaluate_full_retrieval, build_bm25_index, search_bm25
+from utils import *
+from train.utils import *
+from train.trainer import DocumentRankingTrainer
 from dataset import DocumentRankingDataset
 
-#############################################
-# Helper Functions
-#############################################
-
-def prepare_training_samples_bce(corpus: dict, queries: dict, qrels: dict, hard_negative: bool = False, bm25_index=None, bm25_doc_ids=None):
-    """
-    Creates training sample pairs: (query_text, doc_text, label) where label is 1.0 for relevant docs and 0.0 for negatives.
-    For each positive, a negative is also added so that their numbers match.
-    """
-    training_samples = []
-    all_doc_ids = list(corpus.keys())
-    
-    # Precompute hard negatives if enabled.
-    hard_negatives = {}
-    if hard_negative and bm25_index is not None and bm25_doc_ids is not None:
-        for qid in tqdm(qrels, desc="Precomputing hard negatives"):
-            query_text = queries[qid]
-            doc_ids, scores = search_bm25(query_text, bm25_index, bm25_doc_ids, top_k=10)
-            candidate_negatives = [doc_id for doc_id in doc_ids if doc_id not in qrels[qid]]
-            if candidate_negatives:
-                hard_negatives[qid] = candidate_negatives  # store list of negatives
-            else:
-                neg_doc_id = random.choice(all_doc_ids)
-                while neg_doc_id in qrels[qid]:
-                    neg_doc_id = random.choice(all_doc_ids)
-                hard_negatives[qid] = [neg_doc_id]
-
-    # For each query, add positive examples and for each positive add a corresponding negative.
-    for qid, rel_docs in tqdm(qrels.items(), total=len(qrels), desc="Processing queries"):
-        if qid not in queries:
-            continue
-        query_text = queries[qid]
-        pos_doc_ids = [doc_id for doc_id, score in rel_docs.items() if score > 0]
-        if not pos_doc_ids:
-            continue
-        for pos_doc_id in pos_doc_ids:
-            pos_doc_text = corpus[pos_doc_id]['text']
-            training_samples.append((query_text, pos_doc_text, 1.0))
-            # For each positive, add a corresponding negative sample.
-            if hard_negative and qid in hard_negatives:
-                candidate_negatives = hard_negatives[qid]
-                neg_doc_id = random.choice(candidate_negatives)
-            else:
-                neg_doc_id = random.choice(all_doc_ids)
-                while neg_doc_id in rel_docs:
-                    neg_doc_id = random.choice(all_doc_ids)
-            neg_doc_text = corpus[neg_doc_id]['text']
-            training_samples.append((query_text, neg_doc_text, 0.0))
-    
-    return training_samples
-
-def subsample_dev_set(queries_dev: dict, qrels_dev: dict, sample_percentage: float = 0.05):
-    dev_query_ids = list(queries_dev.keys())
-    num_sample = max(1, int(len(dev_query_ids) * sample_percentage))
-    sampled_ids = random.sample(dev_query_ids, num_sample)
-    
-    sampled_queries = {qid: queries_dev[qid] for qid in sampled_ids}
-    sampled_qrels = {qid: qrels_dev[qid] for qid in sampled_ids if qid in qrels_dev}
-    
-    return sampled_queries, sampled_qrels
-    
-#############################################
-# Custom Trainer subclass to override compute_loss
-#############################################
-
-class DocumentRankingTrainer(Trainer):
-    def __init__(self, loss_fn, **kwargs):
-        super().__init__(**kwargs)
-        self.loss_fn = loss_fn
-
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        labels = inputs.pop("labels")
-        outputs = model(**inputs, return_dict=True)
-        logits = outputs["logits"].view(-1)
-        loss = self.loss_fn(logits, labels)
-        return (loss, outputs) if return_outputs else loss
+from GFR.modeling_GFR import GFRForCausalLM, GFRForSequenceScoring
+from GFR.tokenizer_utils import get_tokenizer
 
 def main():
-    parser = argparse.ArgumentParser()
+    """
+    For wandb logging, set the following environment variables:
+
+    export WANDB_API_KEY="your_wandb_api_key"
+    export WANDB_PROJECT="cdr_finetuning_document_ranking"
+    export WANDB_ENTITY="nlp-maocode"
+    """
+    
+    # =========== Setup Arguments ==============
+    parser = argparse.ArgumentParser(description="Fine-tune a scoring model with token type embeddings and a score head.")    
+    
     # Training settings.
-    parser.add_argument("--datasets", type=str, nargs='+', default=["msmarco", "hotpotqa", "nq-train"],
-                        help="List of datasets to use (e.g., msmarco hotpotqa nq-train nq).")
-    parser.add_argument("--pretrained_checkpoint", type=str, required=True,
-                        help="Path to the pretrained GFRForCausalLM checkpoint.")
+    parser.add_argument("--deepspeed_config", type=str, default="deepspeed_config.json",
+                    help="Path to the DeepSpeed configuration file")
+    parser.add_argument("--local_rank", type=int, default=-1, help="Local rank for distributed training")
+    parser.add_argument("--model_name", type=str, default="gpt2-medium", 
+                        help="Pre-trained model name (e.g., gpt2-medium, facebook/opt-350m).")
+    # Specify multiple datasets.
+    parser.add_argument("--datasets", type=str, default="msmarco,nq-train,hotpotqa,fiqa",
+                        help="Comma-separated list of dataset names to use for training (e.g., ms_marco,nq,hotpotqa,fiqa).")
+    parser.add_argument("--samples_per_dataset", type=str, default="0,0,0,0",
+                        help="Comma-separated list of number of training samples to use per dataset in the same order as --datasets. Use 0 to use all available samples.")
+    # Accept a comma-separated list of index names corresponding to each dataset.
+    parser.add_argument("--index_names", type=str,
+                        default="msmarco-passage,beir-v1.0.0-nq.flat,beir-v1.0.0-hotpotqa.flat,beir-v1.0.0-fiqa.flat",
+                        help="Comma-separated list of index names for each dataset, in the same order as --datasets.")
+    parser.add_argument("--index_type", type=str, default="dense",
+                        help="Type of index to use (dense or sparse).")
+    parser.add_argument("--quey_encoder", type=str, default="BAAI/bge-base-en-v1.5", help="Query encoder model name for dense vectors.")
+    parser.add_argument("--n_per_query", type=int, default=1,
+                        help="Number of positive and negative samples to select per query.")
     parser.add_argument("--num_train_epochs", type=int, default=1, help="Number of training epochs.")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=4, help="Training batch size.")
+    parser.add_argument("--per_device_train_batch_size", type=int, default=8, help="Training batch size.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Number of gradient accumulation steps.")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
-    parser.add_argument("--margin", type=float, default=1.0, help="Margin for MarginRankingLoss (unused in BCE)")
+    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate.")
     parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay for optimizer.")
+    parser.add_argument("--gradient_checkpointing", action="store_true", help="Enable gradient checkpointing for memory efficiency.")
     
     # Evaluation settings.
-    parser.add_argument("--sample_dev_percentage", type=float, default=0.05, help="Percentage of dev queries to sample for evaluation")
-    parser.add_argument("--per_device_eval_batch_size", type=int, default=2, help="Per-device evaluation batch size")
+    parser.add_argument("--eval_dataset_file", type=str, default="validation_samples.jsonl", help="Path to the evaluation dataset file.")
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=8, help="Per-device evaluation batch size")
     parser.add_argument("--eval_accumulation_steps", type=int, default=1, help="Evaluation accumulation steps")
     parser.add_argument("--patience", type=int, default=3, help="Number of epochs to wait for improvement before early stopping")
     parser.add_argument("--validate_every_n_steps", type=int, default=1000, help="Perform validation every n training steps")
@@ -127,33 +66,60 @@ def main():
     parser.add_argument("--output_dir", type=str, default="./gfr_finetune_ckpts", help="Output directory for model checkpoints")
     parser.add_argument("--save_model_path", type=str, default="gfr_finetune_final", help="Directory to save the final best model")
     parser.add_argument("--run_name", type=str, default="", help="Run name for logging")
-    parser.add_argument("--wandb_project", type=str, default="gfr_finetuning_document_ranking", help="Wandb project name")
-    parser.add_argument("--wandb_entity", type=str, default="your_group_name", help="Wandb entity name")
-    parser.add_argument("--wandb_api_key", type=str, default="your_wandb_api_key", help="Wandb API key for logging")
+
+    parser.add_argument("--use_prepared_data", action="store_true", 
+                        help="If set, load pre-organized data from prepared files rather than computing hard negatives.")
+    parser.add_argument("--prepared_data_files", type=str,
+                        default="datasets/bge_data/split_1/msmarco_hn_train.jsonl,datasets/bge_data/split_1/nq.jsonl,datasets/bge_data/split/fever.json,datasets/bge_data/split/hotpotqa_pairs.json,datasets/bge_data/split/mr-tydi_english.jsonl",
+                        help="Comma-separated list of file paths for the prepared dataset in the desired order.")
+    parser.add_argument("--prepared_data_sample_counts", type=str,
+                        default="0,0,0,0,0",
+                        help="Comma-separated list of sample counts for each prepared dataset file in the same order. Use 0 to use all available samples.")
+
     args = parser.parse_args()
+
+    # =========== Basic Setup ==============
+    # Check if the batch size is divisible by the group size. (in InfoNCE loss scenario)
+    group_size = 1 + args.n_per_query
+    if args.per_device_train_batch_size % group_size != 0:
+        raise ValueError(
+            f"per_device_train_batch_size ({args.per_device_train_batch_size}) "
+            f"must be a multiple of group_size ({group_size})"
+        )
+    if args.per_device_eval_batch_size % group_size != 0:
+        raise ValueError(
+            f"per_device_eval_batch_size ({args.per_device_eval_batch_size}) "
+            f"must be a multiple of group_size ({group_size})"
+        )
+    
+    # Set up logging.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[
+            logging.StreamHandler(),
+            # logging.FileHandler(args.log_file, mode="w")
+        ],
+        force=True
+    )
+    logger = logging.getLogger()
+    logger.addFilter(MainProcessFilter(args.local_rank))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     now_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = args.run_name + "_" + now_datetime
 
-    # Initialize Wandb.
-    wandb.login(key=args.wandb_api_key)
-    wandb.init(project=args.wandb_project, entity=args.wandb_entity, name=run_name, config={
-        "learning_rate": args.lr,
-        "per_device_train_batch_size": args.per_device_train_batch_size,
-        "gradient_accumulation_steps": args.gradient_accumulation_steps,
-        "num_train_epochs": args.num_train_epochs,
-    })
+    # Parse comma-separated lists.
+    datasets_list = [d.strip() for d in args.datasets.split(",")]
+    samples_list = [int(s.strip()) for s in args.samples_per_dataset.split(",")]
+    index_names_list = [d.strip() for d in args.index_names.split(",")]
+    if not (len(datasets_list) == len(samples_list) == len(index_names_list)):
+        raise ValueError("The number of datasets, samples_per_dataset, and index_names must match.")
 
+    # =========== Setup the Model ==============
     # Load tokenizer.
-    tokenizer = LlamaTokenizer.from_pretrained("huggyllama/llama-7b")
-    tokenizer.padding_side = "left"
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    if tokenizer.sep_token is None:
-        tokenizer.add_special_tokens({"sep_token": "[SEP]"})
-    if "[SCORE]" not in tokenizer.get_vocab():
-        tokenizer.add_special_tokens({"additional_special_tokens": ["[SCORE]"]})
+    tokenizer = get_tokenizer()
 
     # Load pretrained GFRForCausalLM and extract its backbone.
     pretrained_causal_model = GFRForCausalLM.from_pretrained(args.pretrained_checkpoint)
@@ -166,70 +132,80 @@ def main():
     model.resize_token_embeddings(len(tokenizer))
     model.to(device)
     num_params = sum(p.numel() for p in model.parameters())
-    print(f"Number of parameters: {num_params}")
+    logger.info(f"Number of parameters: {num_params}")
 
-    # Set up loss.
-    loss_fn = nn.BCEWithLogitsLoss()
+    # =========== Setup Training Dataset ==============
+    if args.use_prepared_data:
+        # Parse file paths and sample counts.
+        prepared_files = [f.strip() for f in args.prepared_data_files.split(",")]
+        sample_counts = [int(s.strip()) for s in args.prepared_data_sample_counts.split(",")]
+        if len(prepared_files) != len(sample_counts):
+            raise ValueError("The number of prepared files and sample counts must match.")
+        logger.info("Loading prepared training samples from files with specified sample counts...")
+        all_training_samples = load_prepared_samples(prepared_files, sample_counts, args.n_per_query, logger)
+        logger.info(f"Total mixed training samples (prepared): {len(all_training_samples)}")
+        if len(all_training_samples) > 0:
+            logger.info(f"First prepared training sample group: {all_training_samples[:1 + args.n_per_query]}")
+    else:
+        # Original: load and mix training samples from multiple datasets.
+        datasets_list = [d.strip() for d in args.datasets.split(",")]
+        samples_list = [int(s.strip()) for s in args.samples_per_dataset.split(",")]
+        index_names_list = [d.strip() for d in args.index_names.split(",")]
+        if not (len(datasets_list) == len(samples_list) == len(index_names_list)):
+            raise ValueError("The number of datasets, samples_per_dataset, and index_names must match.")
 
-    # Load datasets.
-    training_samples = []
-    dev_data = {}   # { dataset: (corpus, queries, qrels) }
-    test_data = {}  # { dataset: (corpus, queries, qrels) }
-    for dataset in args.datasets:
-        logging.info(f"Loading dataset: {dataset} (train split)")
-        corpus_train, queries_train, qrels_train = load_dataset(dataset, split="train")
-        bm25_index, bm25_doc_ids = build_bm25_index(corpus_train)
-        training_samples.extend(
-            prepare_training_samples_bce(
-                corpus_train, queries_train, qrels_train,
+        all_training_samples = []
+        for dataset_name, sample_count, index_name in zip(datasets_list, samples_list, index_names_list):
+            logger.info(f"Loading dataset: {dataset_name} (train split)")
+            corpus_train, queries_train, qrels_train = load_dataset(logger, dataset_name, split="train")
+            logger.info(f"Using index '{index_name}' for dataset: {dataset_name}")
+            logger.info(f"Preparing training samples for dataset: {dataset_name}")
+
+            if sample_count > 0 and sample_count < len(qrels_train):
+                sampled_qids = random.sample(list(qrels_train.keys()), sample_count)
+                qrels_train_sampled = {qid: qrels_train[qid] for qid in sampled_qids}
+                queries_train_sampled = {qid: queries_train[qid] for qid in sampled_qids if qid in queries_train}
+            else:
+                qrels_train_sampled = qrels_train
+                queries_train_sampled = queries_train
+            logger.info(f"Number of queries in the sampled training set: {len(queries_train_sampled)}")
+
+            samples = prepare_training_samples_infonce(
+                corpus_train,
+                queries_train_sampled,
+                qrels_train_sampled,
+                n_per_query=args.n_per_query,
                 hard_negative=True,
-                bm25_index=bm25_index,
-                bm25_doc_ids=bm25_doc_ids
+                index_name=index_name,
+                index_type=args.index_type,
+                query_encoder=args.quey_encoder
             )
-        )
-                
-        logging.info(f"Loading dataset: {dataset} (dev split)")
-        corpus_dev, queries_dev, qrels_dev = load_dataset(dataset, split="dev")
-        dev_data[dataset] = (corpus_dev, queries_dev, qrels_dev)
-        
-        logging.info(f"Loading dataset: {dataset} (test split)")
-        corpus_test, queries_test, qrels_test = load_dataset(dataset, split="test")
-        test_data[dataset] = (corpus_test, queries_test, qrels_test)
+            logger.info(f"Total samples generated for {dataset_name}: {len(samples)}")
+            all_training_samples.extend(samples)
+        logger.info(f"Total mixed training samples: {len(all_training_samples)}")
+        logger.info(f"First Training samples: {all_training_samples[:1 + args.n_per_query]}")
+    
+    # Create PyTorch Dataset for training.
+    train_dataset = DocumentRankingDataset(all_training_samples, tokenizer, model)
+    logger.info(f"Training dataset size: {len(train_dataset)}")
 
-    logging.info(f"Total training samples: {len(training_samples)}")
-
-    # Combine dev data from all datasets.
-    combined_corpus_dev = {}
-    combined_queries_dev = {}
-    combined_qrels_dev = {}
-    for dataset, (corpus_d, queries_d, qrels_d) in dev_data.items():
-        combined_corpus_dev.update(corpus_d)
-        combined_queries_dev.update(queries_d)
-        combined_qrels_dev.update(qrels_d)
-
-    # Subsample the combined dev set.
-    sampled_queries_dev, sampled_qrels_dev = subsample_dev_set(combined_queries_dev, combined_qrels_dev, sample_percentage=args.sample_dev_percentage)
-    # Build BM25 index on the combined dev corpus.
-    val_bm25_index, val_bm25_doc_ids = build_bm25_index(combined_corpus_dev)
-    validation_samples = prepare_training_samples_bce(combined_corpus_dev, sampled_queries_dev, sampled_qrels_dev, hard_negative=True, bm25_index=val_bm25_index, bm25_doc_ids=val_bm25_doc_ids)
-
-    for dataset in args.datasets:
-        logging.info(f"Dataset {dataset} dev queries: {len(dev_data[dataset][1])}")
-        logging.info(f"Sampled dev queries: {len(sampled_queries_dev)}")
-        logging.info(f"Dataset {dataset} test queries: {len(test_data[dataset][1])}")
-
-    # Create PyTorch Datasets.
-    train_dataset = DocumentRankingDataset(training_samples, tokenizer, model)
+    # =========== Setup Validation Dataset ==============
+    validation_samples = load_json_file(args.eval_dataset_file)
+    logger.info(f"Total samples generated for dev set: {len(validation_samples)}")
+    logger.info(f"First Validation samples: {validation_samples[0]}")
     val_dataset = DocumentRankingDataset(validation_samples, tokenizer, model)
+    logger.info(f"Validation dataset size: {len(val_dataset)}")
 
-    total_training_steps = math.ceil(len(train_dataset) / (args.per_device_train_batch_size * args.gradient_accumulation_steps)) * args.num_train_epochs
-    warmup_steps = int(0.1 * total_training_steps)
+    # =========== Setup Trainer ==============
+    total_training_steps = math.ceil(
+        len(train_dataset) / (args.per_device_train_batch_size * args.gradient_accumulation_steps)
+    ) * args.num_train_epochs
+    warmup_steps = int(0.01 * total_training_steps)
 
     # Set up TrainingArguments.
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         overwrite_output_dir=True,
-
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -237,73 +213,104 @@ def main():
         learning_rate=args.lr,
         warmup_steps=warmup_steps,
         weight_decay=args.weight_decay,
-
+        max_grad_norm=1.0,
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         eval_accumulation_steps=args.eval_accumulation_steps,
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         eval_steps=args.validate_every_n_steps,
-
         logging_dir="./logs_finetune",
         logging_steps=50,
         logging_first_step=True,
-        save_steps=1000,
+        save_steps=5000,
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         report_to="wandb",
         run_name=run_name,
-
-        remove_unused_columns=False
+        remove_unused_columns=False,
+        deepspeed=args.deepspeed_config,
     )
+    log_training_config(training_args, logger)
 
     # Initialize our custom Trainer.
+    data_collator = DataCollatorWithPadding(tokenizer)
     trainer = DocumentRankingTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
+        data_collator=data_collator,
         eval_dataset=val_dataset,
-        loss_fn=loss_fn,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=args.patience)]
+        n_per_query=args.n_per_query,
+        tokenizer=tokenizer
+        # callbacks=[EarlyStoppingCallback(early_stopping_patience=args.patience)]
     )
 
-    # Train the model.
+    # =========== Start Training ==============
     trainer.train()
 
-    # Final evaluation on test sets. (full-rerank is really slow, so we skip it here)
-    # for dataset, (corpus_test, queries_test, qrels_test) in test_data.items():
-    #     test_metrics = evaluate_full_retrieval(
-    #         model, corpus_test, queries_test, qrels_test, tokenizer, device,
-    #         batch_size=args.per_device_eval_batch_size
-    #     )
-    #     logging.info(f"Test metrics for {dataset}: {test_metrics}")
-    #     wandb.log({f"{dataset}_test_metrics": test_metrics})
-
     # Save the final model.
-    trainer.save_model(args.save_model_path)
-    logging.info("Training completed and best model saved.")
-    wandb.finish()
+    if is_main_process():
+        trainer.save_model(args.save_model_path)
+        logger.info("Training completed and best model saved.")
+        wandb.finish()
 
 if __name__ == "__main__":
     main()
 
     """
-    python -m script.gfr_finetune \
-    --datasets msmarco \
-    --pretrained_checkpoint gfr_pretrain_causal_lm_final_finewebedu_v2_200m \
+    model_name list:
+    - openai-community/gpt2-medium
+    - facebook/opt-350m
+    - bigscience/bloom-560m
+    - EleutherAI/pythia-410m
+    - EleutherAI/pythia-1b
+
+    Ensure per_device_train_batch_size is a multiple of (1 + n_per_query)
+
+    Dense Index names: (FAISS)
+    - msmarco-v1-passage.bge-base-en-v1.5 (MS MARCO by BGE)
+    - beir-v1.0.0-nq.bge-base-en-v1.5 (NQ by BGE)
+    - beir-v1.0.0-hotpotqa.bge-base-en-v1.5 (HotPotQA by BGE)
+    - beir-v1.0.0-fever.bge-base-en-v1.5 (FEVER by BGE)
+    # - beir-v1.0.0-quora.bge-base-en-v1.5 (Quora by BGE, only dev and test)
+
+    # - beir-v1.0.0-fiqa.bge-base-en-v1.5 (FiQA by BGE)
+    # - wikipedia-dpr-100w.dkrr-tqa (TriviaQA)
+    
+    Sparse Index names: (Lucene Standard Inverted Indexes)
+    - msmarco-v1-passage
+    - beir-v1.0.0-nq.flat
+    - beir-v1.0.0-hotpotqa.flat
+    - beir-v1.0.0-fiqa.flat
+
+    If you want to load the dataset by yourself, add the following arguments:
+    --datasets "msmarco,nq-train,fever,hotpotqa" \
+    --samples_per_dataset "650000,100000,150000,50000" \
+    --index_names "msmarco-v1-passage.bge-base-en-v1.5,beir-v1.0.0-nq.bge-base-en-v1.5,beir-v1.0.0-fever.bge-base-en-v1.5,beir-v1.0.0-hotpotqa.bge-base-en-v1.5" \
+    --index_type "dense" \
+    --quey_encoder "BAAI/bge-base-en-v1.5" \
+    
+    Example usage:
+    
+    deepspeed --module finetune.finetune \
+    --deepspeed_config deepspeed_config.json \
+    --model_name "EleutherAI/pythia-410m" \
+    --use_prepared_data \
+    --prepared_data_files "datasets/bge_data/split_1/msmarco_hn_train.jsonl,datasets/bge_data/split_1/nq.jsonl,datasets/bge_data/split/fever.json,datasets/bge_data/split/hotpotqa_pairs.json,datasets/bge_data/split/mr-tydi_english.jsonl,datasets/bge_data/split/nli_simcse.json" \
+    --prepared_data_sample_counts "0,0,0,0,0,0" \
+    --n_per_query 15 \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 16 \
+    --per_device_train_batch_size 64 \
     --gradient_accumulation_steps 8 \
-    --lr 1e-5 \
+    --lr 2e-5 \
     --weight_decay 0.01 \
-    --sample_dev_percentage 0.05 \
-    --per_device_eval_batch_size 4 \
+    --eval_dataset_file "datasets/msmarco_val.jsonl" \
+    --per_device_eval_batch_size 16 \
     --eval_accumulation_steps 1 \
-    --patience 3 \
+    --patience 10 \
     --validate_every_n_steps 100 \
-    --output_dir ./gfr_finetune_ckpts_200m_msmarco \
-    --save_model_path ./gfr_finetune_final_200m_msmarco \
-    --run_name 200M_msmarco \
-    --wandb_project gfr_finetuning_document_ranking \
-    --wandb_entity nlp-maocode \
-    --wandb_api_key your_wandb_api_key
+    --output_dir "./cdr_finetune_ckpts_pythia_410m_bgedata" \
+    --save_model_path "cdr_finetune_final_pythia_410m_bgedata" \
+    --run_name "pythia_410m_mixed_bge_data" \
+    --gradient_checkpointing"
     """

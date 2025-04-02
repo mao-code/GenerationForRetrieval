@@ -3,6 +3,15 @@ import logging
 from beir import util
 from beir.datasets.data_loader import GenericDataLoader
 import json
+import torch
+
+__all__ = [
+    "load_dataset",
+    "load_json_file",
+    "save_samples_to_file",
+    "is_main_process",
+    "MainProcessFilter"
+]
 
 def load_dataset(logger, dataset: str, split: str):
     """Loads a BEIR dataset and prefixes ids with the dataset name."""
@@ -64,6 +73,12 @@ def save_samples_to_file(samples, output_file):
             json.dump(samples, f, indent=2)
     else:
         raise ValueError("Unsupported file extension. Use .json or .jsonl")
+
+def is_main_process():
+    # If distributed is not available or not initialized, assume single-process (main)
+    if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+        return True
+    return torch.distributed.get_rank() == 0
 
 class MainProcessFilter(logging.Filter):
     def __init__(self, local_rank):
