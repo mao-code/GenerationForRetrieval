@@ -240,7 +240,7 @@ def main():
     logger.info("\n" + tabulate(comparison_table, headers=headers, tablefmt="grid"))
 
     # --- Save the comparison table to a CSV file ---
-    csv_file = "rerank_comparison_table_gfr.csv"
+    csv_file = f"rerank_comparison_table_gfr_{args.dataset}.csv"
     with open(csv_file, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(headers)
@@ -256,7 +256,7 @@ if __name__ == "__main__":
     python -m evaluation.rerank \
     --dataset msmarco \
     --split test \
-    --models gfr:./gfr_finetune_ckpts_210m_bgedata/checkpoint-5000 standard:cross-encoder/ms-marco-MiniLM-L-12-v2 standard:mixedbread-ai/mxbai-rerank-large-v1 standard:jinaai/jina-reranker-v2-base-multilingual standard:BAAI/bge-reranker-v2-m3 \
+    --models gfr:./gfr_finetune_ckpts_210m_bgedata/checkpoint-5000 gfr:./gfr_finetune_ckpts_210m_bgedata/checkpoint-15000 gfr:./gfr_finetune_ckpts_210m_bgedata/checkpoint-25000 gfr:./gfr_finetune_ckpts_210m_bgedata/checkpoint-29269 gfr:./gfr_finetune_ckpts_210m_bgedata_final standard:cross-encoder/ms-marco-MiniLM-L-12-v2 standard:mixedbread-ai/mxbai-rerank-large-v1 standard:jinaai/jina-reranker-v2-base-multilingual standard:BAAI/bge-reranker-v2-m3 \
     --log_file rerank_results.log \
     --batch_size 16 \
     --top_k 100 \
