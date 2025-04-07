@@ -113,7 +113,7 @@ def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8):
     # Timed run.
     noncache_time = measure_ttft_no_cache(model, full_input, device)
 
-    logger.info("Non-cached inference time (full input):", noncache_time * 1000, "ms")
+    logger.info(f"Non-cached inference time (full input):   {noncache_time * 1000} ms")
     logger.info(f"Cache size:                               {cache_size_mb:.2f} MB\n")
     logger.info(f"Cache generation time:                    {cache_gen_time*1000:.2f} ms")
 
@@ -316,22 +316,22 @@ def main():
 
     # Test for various batch sizes.
     for batch_size in [1, 8, 16]:
-        logger.info("Testing MLA model...", "-"* 20)
+        logger.info(f"Testing MLA model... {"-"* 20}")
         test_cache_vs_noncache_batch_scoring(mla, tokenizer_mla, device, batch_size=batch_size)
 
-        logger.info("Testing GFR model...", "-"* 20) 
+        logger.info(f"Testing GFR model... {"-"* 20}") 
         test_noncache_batch_scoring(gfr, tokenizer_gfr, device, batch_size=batch_size) # No Mamba Cache available, now
 
-        logger.info("Testing CDR-pythia model...", "-"* 20)
+        logger.info(f"Testing CDR-pythia model... {"-"* 20}")
         test_cache_vs_noncache_batch_scoring(cdr_pythia, tokenizer_cdr_pythia, device, batch_size=batch_size)
 
-        logger.info("Testing CDR-mamba2 model...", "-"* 20)
+        logger.info(f"Testing CDR-mamba2 model... {"-"* 20}")
         test_noncache_batch_scoring(mamba2, tokenizer_cdr_mamba2, device, batch_size=batch_size) # No Mamba Cache available, now
 
-        logger.info("Testing Cross-encoder model (msmarco-minilm)...", "-"* 20)
+        logger.info(f"Testing Cross-encoder model (msmarco-minilm)... {"-"* 20}")
         test_cross_encoder_batch_scoring(msmarco_minilm, batch_size=batch_size)
 
-        logger.info("Testing Cross-encoder model (bge))...", "-"* 20)
+        logger.info(f"Testing Cross-encoder model (bge))... {"-"* 20}")
         test_cross_encoder_batch_scoring(bge, batch_size=batch_size)
 
 if __name__ == "__main__":
