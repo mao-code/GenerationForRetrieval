@@ -9,6 +9,7 @@ from cache.cache import (
     move_cache_to_gpu,
     score_with_cache,
 )
+from MLA_CDR.tokenizer_utils import get_tokenizer
 
 def compute_cache_size(cache):
     """
@@ -133,16 +134,8 @@ def main():
     # Device selection: GPU if available.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Initialize the tokenizer.
-    tokenizer = LlamaTokenizer.from_pretrained("huggyllama/llama-7b")
-    tokenizer.padding_side = "left"
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    if tokenizer.sep_token is None:
-        tokenizer.add_special_tokens({"sep_token": "[SEP]"})
-    if "[SCORE]" not in tokenizer.get_vocab():
-        tokenizer.add_special_tokens({"additional_special_tokens": ["[SCORE]"]})
-    
+    tokenizer = get_tokenizer()
+
     # Initialize the model.
     print("Initializing MLA model for pretraining...")
     config = MLAConfig(vocab_size=len(tokenizer))
