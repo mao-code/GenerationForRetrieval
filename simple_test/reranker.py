@@ -82,8 +82,8 @@ def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8, cache_si
 
     # --- Non-cached inference (full input) ---
     # We don't care input and performance here, so we don't use prepare_input function.
-    doc_tokens = tokenizer.encode(doc_text, return_tensors="pt").to(device)
-    query_tokens = tokenizer.encode(query_text, return_tensors="pt").to(device)
+    doc_tokens = tokenizer(doc_text, return_tensors= "pt")["input_ids"].to(device)
+    query_tokens = tokenizer(query_text, return_tensors="pt")["input_ids"].to(device)
     if batch_size > 1:
         doc_tokens = doc_tokens.repeat(batch_size, 1)
         query_tokens = query_tokens.repeat(batch_size, 1)

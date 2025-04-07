@@ -321,7 +321,12 @@ class Mamba2Mixer(nn.Module):
 
         # Single step calculations via cache
         if cache_params is not None and cache_position is not None and cache_position[0] > 0:
-            _, _, gate, hidden_states_B_C, dt = projected_states.squeeze(1).split(
+            # _, _, gate, hidden_states_B_C, dt = projected_states.squeeze(1).split(
+            #     [d_mlp, d_mlp, self.intermediate_size, self.conv_dim, self.num_heads], dim=-1
+            # )
+
+            # Only for testing and prefilling (remove .squeeze(1))
+            _, _, gate, hidden_states_B_C, dt = projected_states.split(
                 [d_mlp, d_mlp, self.intermediate_size, self.conv_dim, self.num_heads], dim=-1
             )
 
