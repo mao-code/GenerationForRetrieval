@@ -110,7 +110,7 @@ def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8, cache_si
 
     # Warm-up.
     with torch.no_grad():
-        _ = model(full_input, use_cache=True)
+        _ = model(full_input, use_cache=False)
     # Timed run.
     noncache_time = measure_ttft_no_cache(model, full_input, device)
 
