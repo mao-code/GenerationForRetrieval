@@ -1732,5 +1732,48 @@ class GFRForSequenceScoring(GFRPreTrainedModel):
         attention_mask_tensor = torch.tensor(attention_masks_list, dtype=torch.long)
         
         return input_ids_tensor, token_type_ids_tensor, attention_mask_tensor
+    
+    def prepare_documents_input(self, documents: list, tokenizer):
+        """
+        Prepares batched document inputs.
+        Each document is tokenized (with a trailing [SEP]) and then dynamically padded
+        to the maximum document length within the batch.
+        """
+
+        # Append [SEP] to each document
+        doc_sequences = [doc + " [SEP]" for doc in documents]
+        inputs = tokenizer(
+            doc_sequences,
+            padding="longest",
+            truncation=True,
+            return_tensors="pt"
+        ) # shape: (batch_size, doc_max_len)
+        
+        input_ids = inputs["input_ids"]
+        token_type_ids = torch.zeros_like(input_ids)  # All 0 for doc_ids and [SEP]
+        attention_mask = inputs["attention_mask"]
+
+        return input_ids, token_type_ids, attention_mask
+
+    # TODO: Should not pad on the query part
+    def prepare_query_input(self, queries: list, tokenizer):
+        """
+        Prepares batched query inputs.
+        """
+        
+        # Append [SCORE] to each query
+        query_sequences = [query + " [SCORE]" for query in queries]
+        inputs = tokenizer(
+            query_sequences,
+            padding="longest",
+            truncation=True,
+            return_tensors="pt"
+        ) # shape: (batch_size, query_max_len)
+        
+        input_ids = inputs["input_ids"]
+        token_type_ids = torch.ones_like(input_ids)  # All 1 for query_ids and [SCORE]
+        attention_mask = inputs["attention_mask"]
+        
+        return input_ids, token_type_ids, attention_mask
 
 __all__ = ["GFRPreTrainedModel", "GFRModel", "GFRForCausalLM", "GFRModelWithTokenTypes", "GFRForSequenceScoring"]
