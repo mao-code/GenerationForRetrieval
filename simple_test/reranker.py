@@ -115,9 +115,9 @@ def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8, cache_si
     noncache_time = measure_ttft_no_cache(model, full_input, device)
 
     logger.info(f"Non-cached inference time (full input):   {noncache_time * 1000} ms")
-    logger.info(f"Cache size:                               {cache_size_mb:.2f} MB\n")
 
     if cache_size:
+        logger.info(f"Cache size:                               {cache_size_mb:.2f} MB\n")
         logger.info(f"Cache generation time:                    {cache_gen_time*1000:.2f} ms")
 
 
@@ -282,7 +282,7 @@ def main():
         vocab_size=len(tokenizer_cdr_mamba2),
         hidden_size=1024,
         state_size=128,
-        num_hidden_layers=24,
+        num_hidden_layers=48,
     )
     mamba2 = Mamba2ForSequenceScoring(mamba2_config)
     mamba2.resize_token_embeddings(len(tokenizer_cdr_mamba2))
