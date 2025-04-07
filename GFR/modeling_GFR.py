@@ -1557,9 +1557,9 @@ class GFRModelWithTokenTypes(GFRModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)  # (batch, seq_len, hidden_size)
 
-            if token_type_ids is not None:
-                token_type_embeds = self.token_type_embeddings(token_type_ids)
-                inputs_embeds = inputs_embeds + token_type_embeds
+        if token_type_ids is not None:
+            token_type_embeds = self.token_type_embeddings(token_type_ids)
+            inputs_embeds = inputs_embeds + token_type_embeds
 
         # Call the parent forward method with the modified embeddings.
         # We pass token_type_ids as None because we already added them.

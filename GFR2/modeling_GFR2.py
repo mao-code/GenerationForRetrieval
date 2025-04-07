@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import torch
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+import torch.nn.functional as F
 
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.activations import ACT2FN
@@ -269,6 +270,67 @@ class GFR2RotaryEmbedding(nn.Module):
 
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
+class GFR2MLARotaryEmbedding(nn.Module):
+    def __init__(self, config: GFR2Config, device=None):
+        super().__init__()
+        # BC: "rope_type" was originally "type"
+        if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
+            self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
+        else:
+            self.rope_type = "default"
+        self.max_seq_len_cached = config.max_position_embeddings
+        self.original_max_seq_len = config.max_position_embeddings
+
+        self.config = config
+        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.original_inv_freq = self.inv_freq
+
+    def _dynamic_frequency_update(self, position_ids, device):
+        """
+        dynamic RoPE layers should recompute `inv_freq` in the following situations:
+        1 - growing beyond the cached sequence length (allow scaling)
+        2 - the current sequence length is in the original scale (avoid losing precision with small sequences)
+        """
+        seq_len = torch.max(position_ids) + 1
+        if seq_len > self.max_seq_len_cached:  # growth
+            inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device, seq_len=seq_len)
+            self.register_buffer("inv_freq", inv_freq, persistent=False)  # TODO joao: may break with compilation
+            self.max_seq_len_cached = seq_len
+
+        if seq_len < self.original_max_seq_len and self.max_seq_len_cached > self.original_max_seq_len:  # reset
+            # This .to() is needed if the model has been moved to a device after being initialized (because
+            # the buffer is automatically moved, but not the original copy)
+            self.original_inv_freq = self.original_inv_freq.to(device)
+            self.register_buffer("inv_freq", self.original_inv_freq, persistent=False)
+            self.max_seq_len_cached = self.original_max_seq_len
+
+    @torch.no_grad()
+    def forward(self, x, position_ids):
+        if "dynamic" in self.rope_type:
+            self._dynamic_frequency_update(position_ids, device=x.device)
+
+        # Core RoPE block
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        position_ids_expanded = position_ids[:, None, :].float()
+        # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
+        device_type = x.device.type
+        device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):
+            freqs = (
+                inv_freq_expanded.to(device=x.device, dtype=torch.float) @ position_ids_expanded.float()
+            ).transpose(1, 2)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos()
+            sin = emb.sin()
+
+        # Advanced RoPE types (e.g. yarn) apply a post-processing scaling factor, equivalent to scaling attention
+        cos = cos * self.attention_scaling
+        sin = sin * self.attention_scaling
+
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
@@ -341,6 +403,42 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
+def apply_rotary_pos_emb_interleave(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    r"""
+    TODO let's just use the original freqcis computation to not have the view
+    transpose + reshape! This is not optimized!
+    Applies Rotary Position Embedding to the query and key tensors.
+
+    Args:
+        q (`torch.Tensor`): The query tensor.
+        k (`torch.Tensor`): The key tensor.
+        cos (`torch.Tensor`): The cosine part of the rotary embedding.
+        sin (`torch.Tensor`): The sine part of the rotary embedding.
+        position_ids (`torch.Tensor`):
+            The position indices of the tokens corresponding to the query and key tensors. For example, this can be
+            used to pass offsetted position ids when working with a KV-cache.
+        unsqueeze_dim (`int`, *optional*, defaults to 1):
+            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
+            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
+            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
+            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
+            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
+            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
+    Returns:
+        `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
+    """
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+
+    b, h, s, d = q.shape
+    q = q.view(b, h, s, d // 2, 2).transpose(4, 3).reshape(b, h, s, d)
+
+    b, h, s, d = k.shape
+    k = k.view(b, h, s, d // 2, 2).transpose(4, 3).reshape(b, h, s, d)
+
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
 
 class GFR2Attention(nn.Module):
     """
@@ -482,9 +580,132 @@ class GFR2Attention(nn.Module):
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
+def yarn_get_mscale(scale=1, mscale=1):
+    if scale <= 1:
+        return 1.0
+    return 0.1 * mscale * math.log(scale) + 1.0
+
+class GFR2MultiHeadLatentAttention(nn.Module):
+    """Multi-headed attention from 'Attention Is All You Need' paper"""
+
+    def __init__(self, config: GFR2Config, layer_idx: int):
+        super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
+        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
+        self.attention_dropout = config.attention_dropout
+        self.num_heads = config.num_attention_heads
+        self.rope_theta = config.rope_theta
+        self.q_lora_rank = config.q_lora_rank
+        self.qk_rope_head_dim = config.qk_rope_head_dim
+        self.kv_lora_rank = config.kv_lora_rank
+        self.v_head_dim = config.v_head_dim
+        self.qk_nope_head_dim = config.qk_nope_head_dim
+        self.qk_head_dim = config.qk_head_dim
+
+        self.is_causal = True
+        self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=config.attention_bias)
+        self.q_a_layernorm = GFR2RMSNorm(config.q_lora_rank)
+        self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.qk_head_dim, bias=False)
+
+        self.kv_a_proj_with_mqa = nn.Linear(
+            config.hidden_size,
+            self.kv_lora_rank + self.qk_rope_head_dim,
+            bias=config.attention_bias,
+        )
+        self.kv_a_layernorm = GFR2RMSNorm(self.kv_lora_rank)
+        self.kv_b_proj = nn.Linear(
+            self.kv_lora_rank,
+            self.num_heads * (self.qk_nope_head_dim + self.v_head_dim),
+            bias=False,
+        )
+
+        self.o_proj = nn.Linear(
+            self.num_heads * self.v_head_dim,
+            config.hidden_size,
+            bias=config.attention_bias,
+        )
+
+        self.scaling = self.qk_head_dim ** (-0.5)
+        if self.config.rope_scaling is not None:
+            mscale_all_dim = self.config.rope_scaling.get("mscale_all_dim", 0)
+            scaling_factor = self.config.rope_scaling["factor"]
+            if mscale_all_dim:
+                mscale = yarn_get_mscale(scaling_factor, mscale_all_dim)
+                self.scaling = self.scaling * mscale * mscale
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: Tuple[torch.Tensor, torch.Tensor],
+        attention_mask: Optional[torch.Tensor],
+        past_key_value: Optional[Cache] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs: Unpack[FlashAttentionKwargs],
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        batch_size, seq_length = hidden_states.shape[:-1]
+        query_shape = (batch_size, seq_length, -1, self.qk_head_dim)
+        key_shape = (batch_size, seq_length, -1, self.qk_nope_head_dim + self.v_head_dim)
+
+        q_states = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(hidden_states))).view(query_shape).transpose(1, 2)
+        q_pass, q_rot = torch.split(q_states, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+
+        compressed_kv = self.kv_a_proj_with_mqa(hidden_states)
+        k_pass, k_rot = torch.split(compressed_kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+
+        k_pass = self.kv_b_proj(self.kv_a_layernorm(k_pass)).view(key_shape).transpose(1, 2)
+        k_pass, value_states = torch.split(k_pass, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
+
+        k_rot = k_rot.view(batch_size, 1, seq_length, self.qk_rope_head_dim)
+
+        cos, sin = position_embeddings
+        if self.config.rope_interleave:  # support using interleaved weights for efficiency
+            q_rot, k_rot = apply_rotary_pos_emb_interleave(q_rot, k_rot, cos, sin)
+        else:
+            q_rot, k_rot = apply_rotary_pos_emb(q_rot, k_rot, cos, sin)
+        k_rot = k_rot.expand(*k_pass.shape[:-1], -1)
+
+        query_states = torch.cat((q_pass, q_rot), dim=-1)
+        key_states = torch.cat((k_pass, k_rot), dim=-1)
+
+        if past_key_value is not None:
+            # sin and cos are specific to RoPE models; cache_position needed for the static cache
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+
+        if self.config._attn_implementation == "flash_attention_2" and self.qk_head_dim != self.v_head_dim:
+            value_states = F.pad(value_states, [0, self.qk_head_dim - self.v_head_dim])
+
+        attention_interface: Callable = eager_attention_forward
+        if self.config._attn_implementation != "eager":
+            if self.config._attn_implementation == "sdpa" and kwargs.get("output_attentions", False):
+                logger.warning_once(
+                    "`torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to "
+                    'eager attention. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
+                )
+            else:
+                attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+
+        attn_output, attn_weights = attention_interface(
+            self,
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            dropout=0.0 if not self.training else self.attention_dropout,
+            scaling=self.scaling,
+            **kwargs,
+        )
+
+        if self.config._attn_implementation == "flash_attention_2" and self.qk_head_dim != self.v_head_dim:
+            attn_output = attn_output[:, :, :, : self.v_head_dim]
+
+        attn_output = attn_output.reshape(batch_size, seq_length, -1).contiguous()
+        attn_output = self.o_proj(attn_output)
+        return attn_output, attn_weights
+
 
 # Helper methods for segment sum computation
-
 
 def pad_tensor_by_size(input_tensor: torch.Tensor, pad_size: int):
     """
@@ -1016,11 +1237,13 @@ class GFR2AttentionDecoderLayer(nn.Module):
 
         self.block_id = block_id
         num_gs = len(config.hybrid_layer_ids)
+        attn_hidden_size = config.hidden_size * (2 if concat_input else 1)
 
-        self.input_layernorm = GFR2RMSNorm(config.attention_hidden_size, eps=config.rms_norm_eps)
-        self.self_attn = GFR2Attention(config, layer_idx=-1, num_fwd_mem_blocks=num_gs, block_id=block_id)
+        self.input_layernorm = GFR2RMSNorm(attn_hidden_size, eps=config.rms_norm_eps)
+        # self.self_attn = GFR2Attention(config, layer_idx=-1, num_fwd_mem_blocks=num_gs, block_id=block_id)
+        self.self_attn = GFR2MultiHeadLatentAttention(config, layer_idx=-1)
 
-        self.pre_ff_layernorm = GFR2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.pre_ff_layernorm = GFR2RMSNorm(attn_hidden_size, eps=config.rms_norm_eps)
         self.feed_forward = GFR2MLP(config, num_fwd_mem_blocks=num_gs, block_id=block_id)
 
         self.concat_input = concat_input
@@ -1094,6 +1317,10 @@ class GFR2MambaDecoderLayer(nn.Module):
         super().__init__()
         self.mamba = GFR2MambaMixer(config=config, layer_idx=layer_idx)
         self.input_layernorm = GFR2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        self.pre_ff_layernorm = GFR2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.feed_forward = GFR2MLP(config)
+
         self.layer_idx = layer_idx
 
     def forward(
@@ -1128,22 +1355,24 @@ class GFR2MambaDecoderLayer(nn.Module):
 
         residual = hidden_states
 
-        # `transformer_hidden_states` is the output from shared transformer + linear layer (see fig. 2 in https://arxiv.org/pdf/2405.16712).
-        # `transformer_hidden_states` is then added to the input to the mamba layer below (as described in eq. (6) of https://arxiv.org/pdf/2405.16712).
-        hidden_states = (
-            hidden_states + transformer_hidden_states if transformer_hidden_states is not None else hidden_states
-        )
         hidden_states = self.input_layernorm(hidden_states)
 
         hidden_states = self.mamba(
             hidden_states=hidden_states,
             cache_params=past_key_value,
             attention_mask=attention_mask,
-        )
+        ) # Back to hidden_size
 
         self_attn_weights = None
 
         # residual connection after mamba
+        hidden_states = residual + hidden_states
+
+        # feed-forward (MLP)
+        residual = hidden_states
+        hidden_states = self.pre_ff_layernorm(hidden_states)
+        hidden_states = self.feed_forward(hidden_states)
+
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -1155,81 +1384,6 @@ class GFR2MambaDecoderLayer(nn.Module):
             outputs += (past_key_value,)
 
         return outputs
-
-
-class GFR2HybridLayer(nn.Module):
-    def __init__(
-        self, shared_transformer: GFR2AttentionDecoderLayer, linear: nn.Linear, mamba: GFR2MambaDecoderLayer
-    ):
-        super().__init__()
-        self.linear = linear
-        self.mamba_decoder = mamba
-        self.shared_transformer = shared_transformer
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        original_hidden_states: Optional[torch.Tensor] = None,
-        layer_idx: Optional[int] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        causal_mask: Optional[torch.Tensor] = None,
-        past_key_value: Optional[GFR2HybridDynamicCache] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        position_embeddings: Optional[torch.LongTensor] = None,
-    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-        """
-        Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            original_hidden_states (`torch.FloatTensor`): word embedding output that will be concatenated with
-            hidden activations to form the input of the shared transformer layer.
-            layer_idx (`int`): layer number.
-            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-                `(batch, sequence_length)` where padding elements are indicated by 0.
-            past_key_value (`GFR2HybridDynamicCache`, *optional*): cached past key and value projection states
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            use_cache (`bool`, *optional*):
-                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-                (see `past_key_values`).
-            position_embeddings (`Tuple[torch.FloatTensor, torch.FloatTensor]`, *optional*):
-                Tuple containing the cosine and sine positional embeddings of shape `(batch_size, seq_len, head_dim)`,
-                with `head_dim` being the embedding dimension of each attention head.
-        """
-
-        layer_outputs = self.shared_transformer(
-            hidden_states,
-            original_hidden_states=original_hidden_states,
-            layer_idx=layer_idx,
-            attention_mask=causal_mask,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            position_embeddings=position_embeddings,
-        )
-
-        transformer_hidden_states = layer_outputs[0]
-
-        if output_attentions:
-            self_attn_weights = layer_outputs[1]
-
-        transformer_hidden_states = self.linear(transformer_hidden_states)
-
-        layer_outputs = self.mamba_decoder(
-            hidden_states,
-            transformer_hidden_states=transformer_hidden_states,
-            attention_mask=attention_mask,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            position_embeddings=position_embeddings,
-        )
-
-        if output_attentions:
-            layer_outputs = (layer_outputs[0], self_attn_weights) + layer_outputs[2:]
-
-        return layer_outputs
-
 
 class GFR2PreTrainedModel(PreTrainedModel):
     config_class = GFR2Config
@@ -1269,97 +1423,6 @@ class GFR2PreTrainedModel(PreTrainedModel):
                 module.dt_bias.copy_(inv_dt)
             module.dt_bias._no_reinit = True
 
-
-GFR2_START_DOCSTRING = r"""
-    This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
-    library implements for all its model (such as downloading or saving, resizing the input embeddings, pruning heads
-    etc.)
-
-    This model is also a PyTorch [torch.nn.Module](https://pytorch.org/docs/stable/nn.html#torch.nn.Module) subclass.
-    Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to general usage
-    and behavior.
-
-    Parameters:
-        config ([`GFR2Config`]):
-            Model configuration class with all the parameters of the model. Initializing with a config file does not
-            load the weights associated with the model, only the configuration. Check out the
-            [`~PreTrainedModel.from_pretrained`] method to load the model weights.
-"""
-
-
-GFR2_INPUTS_DOCSTRING = r"""
-    Args:
-        input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-            Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should you provide
-            it.
-
-            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
-            [`PreTrainedTokenizer.__call__`] for details.
-
-            [What are input IDs?](../glossary#input-ids)
-        attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-
-            [What are attention masks?](../glossary#attention-mask)
-
-            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
-            [`PreTrainedTokenizer.__call__`] for details.
-
-            If `past_key_values` is used, optionally only the last `input_ids` have to be input (see
-            `past_key_values`).
-
-            If you want to change padding behavior, you should read [`modeling_opt._prepare_decoder_attention_mask`]
-            and modify to your needs. See diagram 1 in [the paper](https://arxiv.org/abs/1910.13461) for more
-            information on the default strategy.
-
-            - 1 indicates the head is **not masked**,
-            - 0 indicates the head is **masked**.
-        position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Indices of positions of each input sequence tokens in the position embeddings. Selected in the range `[0,
-            config.n_positions - 1]`.
-
-            [What are position IDs?](../glossary#position-ids)
-        past_key_values (`GFR2HybridDynamicCache`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
-            A GFR2HybridDynamicCache object containing pre-computed hidden-states (keys and values in the
-            self-attention blocks and convolution and ssm states in the mamba blocks) that can be used (see
-            `past_key_values` input) to speed up sequential decoding.
-            Key and value cache tensors have shape `(batch_size, num_heads, seq_len, head_dim)`.
-            Convolution and ssm states tensors have shape `(batch_size, d_inner, d_conv)` and
-            `(batch_size, d_inner, d_state)` respectively.
-            See the `GFR2HybridDynamicCache` class for more details.
-
-            If `past_key_values` are used, the user can optionally input only the last `input_ids` (those that
-            don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of all
-            `input_ids` of shape `(batch_size, sequence_length)`.
-        inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
-            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation. This
-            is useful if you want more control over how to convert `input_ids` indices into associated vectors than the
-            model's internal embedding lookup matrix.
-        use_cache (`bool`, *optional*):
-            If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding (see
-            `past_key_values`).
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
-            tensors for more detail.
-        output_hidden_states (`bool`, *optional*):
-            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
-            more detail.
-        return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-            Indices depicting the position of the input sequence tokens in the sequence. Contrarily to `position_ids`,
-            this tensor is not affected by padding. It is used to update the cache in the correct position and to infer
-            the complete sequence length.
-"""
-
-
-@add_start_docstrings(
-    "The bare GFR2 Model outputting raw hidden-states without any specific head on top.",
-    GFR2_START_DOCSTRING,
-)
 class GFR2Model(GFR2PreTrainedModel):
     """
     Model consisting of *config.num_hidden_layers* layers.
@@ -1410,7 +1473,6 @@ class GFR2Model(GFR2PreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    @add_start_docstrings_to_model_forward(GFR2_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids: torch.LongTensor = None,

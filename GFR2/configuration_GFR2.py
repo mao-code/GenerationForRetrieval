@@ -143,6 +143,17 @@ class GFR2Config(PretrainedConfig):
         bos_token_id=1,
         eos_token_id=2,
         use_long_context=False,
+
+        # MLA configuration fields:
+        q_lora_rank=128,
+        kv_lora_rank=128,
+        qk_rope_head_dim=64,
+        qk_nope_head_dim=64,
+        qk_head_dim=128,
+        v_head_dim=128,
+        # Optionally, define rope_scaling if using RoPE.
+        rope_scaling={"rope_type": "default"},
+
         **kwargs,
     ):
         super().__init__(
@@ -213,6 +224,15 @@ class GFR2Config(PretrainedConfig):
         self.num_logits_to_keep = num_logits_to_keep
         self.hybrid_layer_ids = [index for index, type in enumerate(self.layers_block_type) if type == "hybrid"]
         self.use_mem_eff_path = use_mem_eff_path
+
+        # MLA configuration fields:
+        self.q_lora_rank = q_lora_rank
+        self.kv_lora_rank = kv_lora_rank
+        self.qk_rope_head_dim = qk_rope_head_dim
+        self.qk_nope_head_dim = qk_nope_head_dim
+        self.qk_head_dim = qk_head_dim
+        self.v_head_dim = v_head_dim
+        self.rope_scaling = rope_scaling
 
 
 __all__ = ["GFR2Config"]
