@@ -73,6 +73,9 @@ def get_documents_cache(model, documents: dict, tokenizer: PreTrainedTokenizer, 
             )
         batch_pkv = outputs.get("past_key_values", None)
         if batch_pkv is None:
+            batch_pkv = outputs.get("cache_params", None)
+            
+        if batch_pkv is None:
             raise ValueError("The model did not return past_key_values. Ensure that use_cache=True is working.")
         
         # Offload the cache to CPU and store it in the list

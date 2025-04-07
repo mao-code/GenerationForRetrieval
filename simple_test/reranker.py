@@ -75,7 +75,7 @@ def measure_ttft_no_cache(model, full_input, device):
         elapsed = time.time() - start_time
     return elapsed
 
-def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8):
+def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8, cache_size=False):
     # Define sample texts.
     doc_text = "word " * 512    # ~512 tokens per document
     query_text = "query " * 15   # ~15 tokens per query
@@ -93,19 +93,20 @@ def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8):
     documents = {f"doc_{i}": doc_text for i in range(batch_size)}
     
     # Warm-up cache generation.
-    with torch.no_grad():
-        _ = get_documents_cache(model, documents, tokenizer, device, batch_size=batch_size)
-    
-    # Measure cache generation time.
-    start = time.time()
-    cache = get_documents_cache(model, documents, tokenizer, device, batch_size=batch_size)
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    cache_gen_time = time.time() - start
+    if cache_size:
+        with torch.no_grad():
+            _ = get_documents_cache(model, documents, tokenizer, device, batch_size=batch_size)
+        
+        # Measure cache generation time.
+        start = time.time()
+        cache = get_documents_cache(model, documents, tokenizer, device, batch_size=batch_size)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        cache_gen_time = time.time() - start
 
-    # Compute cache size.
-    cache_size_bytes = compute_cache_size(cache)
-    cache_size_mb = cache_size_bytes / (1024 * 1024)
+        # Compute cache size.
+        cache_size_bytes = compute_cache_size(cache)
+        cache_size_mb = cache_size_bytes / (1024 * 1024)
 
     # Warm-up.
     with torch.no_grad():
@@ -115,7 +116,9 @@ def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8):
 
     logger.info(f"Non-cached inference time (full input):   {noncache_time * 1000} ms")
     logger.info(f"Cache size:                               {cache_size_mb:.2f} MB\n")
-    logger.info(f"Cache generation time:                    {cache_gen_time*1000:.2f} ms")
+
+    if cache_size:
+        logger.info(f"Cache generation time:                    {cache_gen_time*1000:.2f} ms")
 
 
 def test_cache_vs_noncache_batch_scoring(model, tokenizer, device, batch_size=8):
@@ -228,7 +231,7 @@ def main():
     # Initialize the model.
     tokenizer_mla = get_tokenizer_mla()
     logger.info("Initializing MLA model...")
-    config_mla = MLAConfig(vocab_size=len(tokenizer_mla))
+    config_mla = MLAConfig(vocab_size=len(tokenizer_mla), num_hidden_layers=16)
     mla = MLAForSequenceScoring(config_mla)
     mla.resize_token_embeddings(len(tokenizer_mla))
     mla.to(device)
@@ -279,7 +282,7 @@ def main():
         vocab_size=len(tokenizer_cdr_mamba2),
         hidden_size=1024,
         state_size=128,
-        num_hidden_layers=8,
+        num_hidden_layers=24,
     )
     mamba2 = Mamba2ForSequenceScoring(mamba2_config)
     mamba2.resize_token_embeddings(len(tokenizer_cdr_mamba2))
@@ -320,7 +323,7 @@ def main():
         test_cache_vs_noncache_batch_scoring(mla, tokenizer_mla, device, batch_size=batch_size)
 
         logger.info(f"Testing GFR model... {"-"* 20}") 
-        test_noncache_batch_scoring(gfr, tokenizer_gfr, device, batch_size=batch_size) # No Mamba Cache available, now
+        test_noncache_batch_scoring(gfr, tokenizer_gfr, device, batch_size=batch_size, cache_size=False) # No Mamba Cache available, now
 
         logger.info(f"Testing CDR-pythia model... {"-"* 20}")
         test_cache_vs_noncache_batch_scoring(cdr_pythia, tokenizer_cdr_pythia, device, batch_size=batch_size)
