@@ -24,6 +24,18 @@ from sentence_transformers import CrossEncoder
 from pympler import asizeof
 import logging
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("reranker_simpletest.log", mode="w")
+    ],
+    force=True
+)
+logger = logging.getLogger()
+
 def compute_cache_size(cache):
     """
     Compute the total memory footlogger.info (in bytes) of the key/value cache.
@@ -210,18 +222,6 @@ def test_cross_encoder_batch_scoring(model, batch_size=8):
     logger.info("Non-cached inference time (full input):", elapsed * 1000, "ms")
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler("reranker_simpletest.log", mode="w")
-        ],
-        force=True
-    )
-    logger = logging.getLogger()
-
     # Device selection: GPU if available.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
