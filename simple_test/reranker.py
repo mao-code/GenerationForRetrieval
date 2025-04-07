@@ -285,7 +285,7 @@ def main():
         }, 
         trust_remote_code=True
     )
-    num_params = sum(p.numel() for p in msmarco_minilm.parameters())
+    num_params = sum(p.numel() for p in msmarco_minilm.model.parameters())
     print(f"Number of parameters: {num_params}")
 
     print("Initializing Cross-encoder model (BGE)...")
@@ -298,7 +298,7 @@ def main():
         }, 
         trust_remote_code=True
     )
-    num_params = sum(p.numel() for p in bge.parameters())
+    num_params = sum(p.numel() for p in bge.model.parameters())
     print(f"Number of parameters: {num_params}")    
 
     # Test for various batch sizes.
