@@ -164,18 +164,17 @@ def test_cross_encoder_batch_scoring(model, batch_size=8):
     query_text = "query " * 15   # ~15 tokens per query
 
     pairs = []
-    if batch_size > 1:
-        for i in range(batch_size):
-            pairs.append((query_text, doc_text))
+    pairs = [(query_text, doc_text) for _ in range(batch_size)]
 
     # Warm-up.
     with torch.no_grad():
-        scores = model.predict(pairs, batch_size=batch_size)
+        scores = model.predict(pairs)
 
     # Timed run.
-    start_time = time.time()
-    scores = model.predict(pairs, batch_size=batch_size)
-    elapsed = time.time() - start_time
+    with torch.no_grad():
+        start_time = time.time()
+        scores = model.predict(pairs)
+        elapsed = time.time() - start_time
 
     print("Non-cached inference time (full input):", elapsed * 1000, "ms")
 

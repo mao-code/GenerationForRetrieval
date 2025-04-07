@@ -136,8 +136,8 @@ class MLAConfig(PretrainedConfig):
     def __init__(
         self,
         vocab_size=129280,
-        hidden_size=2048,
-        intermediate_size=8192,
+        hidden_size=1024,
+        intermediate_size=4096,
         moe_intermediate_size=2048,
         num_hidden_layers=3,
         num_attention_heads=16,
