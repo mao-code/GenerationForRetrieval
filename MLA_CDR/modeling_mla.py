@@ -1034,6 +1034,7 @@ class MLAForSequenceScoring(MLAPreTrainedModel):
 
         return input_ids, token_type_ids, attention_mask
 
+    # TODO: Should not pad on the query part
     def prepare_query_input(self, queries: list, tokenizer):
         """
         Prepares batched query inputs.

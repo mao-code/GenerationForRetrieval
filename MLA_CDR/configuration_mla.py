@@ -139,7 +139,7 @@ class MLAConfig(PretrainedConfig):
         hidden_size=2048,
         intermediate_size=8192,
         moe_intermediate_size=2048,
-        num_hidden_layers=24,
+        num_hidden_layers=3,
         num_attention_heads=16,
         num_key_value_heads=16,
         routed_scaling_factor=2.5,
