@@ -3,7 +3,7 @@ import torch
 from transformers import LlamaTokenizer
 from MLA_CDR.configuration_mla import MLAConfig
 from MLA_CDR.modeling_mla import MLAForSequenceScoring
-from cache import (
+from cache.cache import (
     get_documents_cache,
     move_cache_to_cpu,
     move_cache_to_gpu,
