@@ -864,12 +864,6 @@ class MLAForCausalLM(MLAPreTrainedModel, GenerationMixin):
 
 
 class MLAForSequenceScoring(MLAPreTrainedModel):
-    """
-    GFR model for sequence scoring.
-    
-    This model wraps the GFRModel backbone and adds a score head that uses
-    the [CLS] token (first token) hidden state for scoring.
-    """
     def __init__(self, config):
         super().__init__(config)
         self.config = config
@@ -882,10 +876,10 @@ class MLAForSequenceScoring(MLAPreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
-        return self.gfr.get_input_embeddings()
+        return self.model.get_input_embeddings()
     
     def set_input_embeddings(self, value):
-        return self.gfr.set_input_embeddings(value)
+        return self.model.set_input_embeddings(value)
 
     def forward(
         self,
