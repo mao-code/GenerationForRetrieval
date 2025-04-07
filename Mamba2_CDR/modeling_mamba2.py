@@ -23,19 +23,18 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
 
-from ...activations import ACT2FN
-from ...generation import GenerationMixin
-from ...modeling_utils import PreTrainedModel
-from ...utils import (
+from transformers.activations import ACT2FN
+from transformers.generation import GenerationMixin
+from transformers.modeling_utils import PreTrainedModel
+from transformers.utils import (
     ModelOutput,
     add_code_sample_docstrings,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
     logging,
 )
-from ...utils.import_utils import is_causal_conv1d_available, is_mamba_2_ssm_available
-from .configuration_mamba2 import Mamba2Config
-
+from transformers.utils.import_utils import is_causal_conv1d_available, is_mamba_2_ssm_available
+from Mamba2_CDR.configuration_mamba2 import Mamba2Config
 
 logger = logging.get_logger(__name__)
 
