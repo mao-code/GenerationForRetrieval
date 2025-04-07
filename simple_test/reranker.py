@@ -110,7 +110,7 @@ def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8, cache_si
 
     # Warm-up.
     with torch.no_grad():
-        _ = model(full_input, use_cache=False)
+        _ = model(input_ids=full_input, use_cache=False)
     # Timed run.
     noncache_time = measure_ttft_no_cache(model, full_input, device)
 
@@ -277,7 +277,7 @@ def main():
     logger.info("Initializing CDR-Mamba2...")
     tokenizer_cdr_mamba2 = get_tokenizer_mamba2()
     mamba2_config = Mamba2Config(
-        num_heads=8,
+        num_heads=16,
         head_dim=64,
         vocab_size=len(tokenizer_cdr_mamba2),
         hidden_size=1024,
