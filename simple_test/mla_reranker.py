@@ -1,7 +1,8 @@
 import time
 import torch
 from transformers import LlamaTokenizer
-from MLA_CDR import MLAConfig, MLAForSequenceScoring
+from MLA_CDR.configuration_mla import MLAConfig
+from MLA_CDR.modeling_mla import MLAForSequenceScoring
 from cache import (
     get_documents_cache,
     move_cache_to_cpu,
