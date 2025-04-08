@@ -23,6 +23,7 @@ from sentence_transformers import CrossEncoder
 
 from pympler import asizeof
 import logging
+import sys
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +36,25 @@ logging.basicConfig(
     force=True
 )
 logger = logging.getLogger()
+
+def deep_getsizeof(o, ids=None):
+    if ids is None:
+        ids = set()
+    object_id = id(o)
+    if object_id in ids:
+        return 0
+    ids.add(object_id)
+    
+    size = sys.getsizeof(o)
+    
+    if isinstance(o, dict):
+        size += sum((deep_getsizeof(k, ids) + deep_getsizeof(v, ids)) for k, v in o.items())
+    elif hasattr(o, '__dict__'):
+        size += deep_getsizeof(o.__dict__, ids)
+    elif hasattr(o, '__iter__') and not isinstance(o, (str, bytes, bytearray)):
+        size += sum(deep_getsizeof(i, ids) for i in o)
+    
+    return size
 
 def compute_cache_size(cache):
     """
@@ -57,7 +77,10 @@ def compute_cache_size(cache):
     #     logger.info("Warning: Unrecognized cache format.")
     # return total_bytes
 
-    cache_size = asizeof.asizeof(cache)
+    # cache_size = asizeof.asizeof(cache)
+
+    cache_size = deep_getsizeof(cache)
+
     return cache_size
 
 def measure_ttft_no_cache(model, full_input, device):
@@ -233,7 +256,7 @@ def main():
     # Initialize the model.
     tokenizer_mla = get_tokenizer_mla()
     logger.info("Initializing MLA model...")
-    config_mla = MLAConfig(vocab_size=len(tokenizer_mla), num_hidden_layers=24)
+    config_mla = MLAConfig(vocab_size=len(tokenizer_mla), num_hidden_layers=20)
     mla = MLAForSequenceScoring(config_mla)
     mla.resize_token_embeddings(len(tokenizer_mla))
     mla.to(device)
