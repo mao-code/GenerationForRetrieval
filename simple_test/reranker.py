@@ -224,7 +224,7 @@ def test_cross_encoder_batch_scoring(model, batch_size=8):
         scores = model.predict(pairs)
         elapsed = time.time() - start_time
 
-    logger.info("Non-cached inference time (full input):", elapsed * 1000, "ms")
+    logger.info(f"Non-cached inference time (full input): {elapsed * 1000} ms")
 
 def main():
     # Device selection: GPU if available.
@@ -233,7 +233,7 @@ def main():
     # Initialize the model.
     tokenizer_mla = get_tokenizer_mla()
     logger.info("Initializing MLA model...")
-    config_mla = MLAConfig(vocab_size=len(tokenizer_mla), num_hidden_layers=16)
+    config_mla = MLAConfig(vocab_size=len(tokenizer_mla), num_hidden_layers=32)
     mla = MLAForSequenceScoring(config_mla)
     mla.resize_token_embeddings(len(tokenizer_mla))
     mla.to(device)
@@ -279,12 +279,15 @@ def main():
     logger.info("Initializing CDR-Mamba2...")
     tokenizer_cdr_mamba2 = get_tokenizer_mamba2()
     mamba2_config = Mamba2Config(
+        vocab_size=len(tokenizer_cdr_mamba2),
         num_heads=16,
         head_dim=64,
-        vocab_size=len(tokenizer_cdr_mamba2),
         hidden_size=1024,
-        state_size=128,
-        num_hidden_layers=48,
+        state_size=16,
+        n_groups=1,
+        expand=2,
+        chunk_size=64,
+        num_hidden_layers=64,
     )
     mamba2 = Mamba2ForSequenceScoring(mamba2_config)
     mamba2.resize_token_embeddings(len(tokenizer_cdr_mamba2))
