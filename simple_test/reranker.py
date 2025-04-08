@@ -75,7 +75,7 @@ def measure_ttft_no_cache(model, full_input, device):
         elapsed = time.time() - start_time
     return elapsed
 
-def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8, cache_size=False):
+def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8, cache_size=True):
     # Define sample texts.
     doc_text = "word " * 512    # ~512 tokens per document
     query_text = "query " * 15   # ~15 tokens per query
