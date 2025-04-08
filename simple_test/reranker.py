@@ -69,7 +69,7 @@ def measure_ttft_no_cache(model, full_input, device):
         if device.type == "cuda":
             torch.cuda.synchronize()
         start_time = time.time()
-        _ = model(full_input, use_cache=True)
+        _ = model(full_input, use_cache=False)
         if device.type == "cuda":
             torch.cuda.synchronize()
         elapsed = time.time() - start_time
@@ -82,12 +82,20 @@ def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8, cache_si
 
     # --- Non-cached inference (full input) ---
     # We don't care input and performance here, so we don't use prepare_input function.
-    doc_tokens = tokenizer(doc_text, return_tensors= "pt")["input_ids"].to(device)
-    query_tokens = tokenizer(query_text, return_tensors="pt")["input_ids"].to(device)
-    if batch_size > 1:
-        doc_tokens = doc_tokens.repeat(batch_size, 1)
-        query_tokens = query_tokens.repeat(batch_size, 1)
-    full_input = torch.cat((doc_tokens, query_tokens), dim=1)
+    if hasattr(model, "prepare_input"):
+        all_docs = [doc_text for _ in range(batch_size)]
+        all_queries = [query_text for _ in range(batch_size)]
+        input_ids, token_type_ids, attention_mask = model.prepare_documents_input(all_docs, all_queries, tokenizer)
+
+        full_input = input_ids.to(device)
+    else:
+        doc_tokens = tokenizer(doc_text, return_tensors= "pt")["input_ids"].to(device)
+        query_tokens = tokenizer(query_text, return_tensors="pt")["input_ids"].to(device)
+        if batch_size > 1:
+            doc_tokens = doc_tokens.repeat(batch_size, 1)
+            query_tokens = query_tokens.repeat(batch_size, 1)
+
+        full_input = torch.cat((doc_tokens, query_tokens), dim=1)
 
     # Get cache to get size
     documents = {f"doc_{i}": doc_text for i in range(batch_size)}
@@ -111,6 +119,7 @@ def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8, cache_si
     # Warm-up.
     with torch.no_grad():
         _ = model(input_ids=full_input, use_cache=False)
+
     # Timed run.
     noncache_time = measure_ttft_no_cache(model, full_input, device)
 
