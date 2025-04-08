@@ -233,7 +233,7 @@ def main():
     # Initialize the model.
     tokenizer_mla = get_tokenizer_mla()
     logger.info("Initializing MLA model...")
-    config_mla = MLAConfig(vocab_size=len(tokenizer_mla), num_hidden_layers=32)
+    config_mla = MLAConfig(vocab_size=len(tokenizer_mla), num_hidden_layers=24)
     mla = MLAForSequenceScoring(config_mla)
     mla.resize_token_embeddings(len(tokenizer_mla))
     mla.to(device)
@@ -333,8 +333,8 @@ def main():
         logger.info(f"Testing CDR-pythia model... {"-"* 20}")
         test_cache_vs_noncache_batch_scoring(cdr_pythia, tokenizer_cdr_pythia, device, batch_size=batch_size)
 
-        logger.info(f"Testing CDR-mamba2 model... {"-"* 20}")
-        test_noncache_batch_scoring(mamba2, tokenizer_cdr_mamba2, device, batch_size=batch_size) # No Mamba Cache available, now
+        # logger.info(f"Testing CDR-mamba2 model... {"-"* 20}")
+        # test_noncache_batch_scoring(mamba2, tokenizer_cdr_mamba2, device, batch_size=batch_size) # No Mamba Cache available, now
 
         logger.info(f"Testing Cross-encoder model (msmarco-minilm)... {"-"* 20}")
         test_cross_encoder_batch_scoring(msmarco_minilm, batch_size=batch_size)
