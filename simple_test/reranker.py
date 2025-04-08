@@ -85,7 +85,7 @@ def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8, cache_si
     if hasattr(model, "prepare_input"):
         all_docs = [doc_text for _ in range(batch_size)]
         all_queries = [query_text for _ in range(batch_size)]
-        input_ids, token_type_ids, attention_mask = model.prepare_documents_input(all_docs, all_queries, tokenizer)
+        input_ids, token_type_ids, attention_mask = model.prepare_input(all_docs, all_queries, tokenizer)
 
         full_input = input_ids.to(device)
     else:
