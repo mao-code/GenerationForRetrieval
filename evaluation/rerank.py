@@ -181,19 +181,6 @@ def main():
                         batch_scores = [batch_scores]
                     scores.extend(batch_scores)
 
-
-
-
-
-                start_time = time.time()
-
-                scores = model.predict(pairs, batch_size=args.batch_size)
-                elapsed = time.time() - start_time
-                total_inference_time += elapsed
-                total_docs_processed += len(candidate_docs)
-                if not isinstance(scores, list):
-                    scores = scores.tolist()
-
             # Map document IDs to scores
             reranked_results[qid] = {doc_id: score for doc_id, score in zip(candidate_doc_ids, scores)}
 
