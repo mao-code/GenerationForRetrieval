@@ -103,8 +103,8 @@ def test_noncache_batch_scoring(model, tokenizer, device, batch_size=8, cache_si
 
     # --- Non-cached inference (full input) ---
     # We don't care input and performance here, so we don't use prepare_input function.
-    doc_tokens = tokenizer(doc_text, return_tensors= "pt")["input_ids"].to(device)
-    query_tokens = tokenizer(query_text, return_tensors="pt")["input_ids"].to(device)
+    doc_tokens = tokenizer(doc_text, return_tensors= "pt", padding=True, truncation=True, max_length=512)["input_ids"].to(device)
+    query_tokens = tokenizer(query_text, return_tensors="pt", padding=True, truncation=True, max_length=512)["input_ids"].to(device)
     if batch_size > 1:
         doc_tokens = doc_tokens.repeat(batch_size, 1)
         query_tokens = query_tokens.repeat(batch_size, 1)
@@ -156,8 +156,8 @@ def test_cache_vs_noncache_batch_scoring(model, tokenizer, device, batch_size=8)
 
     # --- Non-cached inference (full input) ---
     # Tokenize document and query.
-    doc_tokens = tokenizer(doc_text, return_tensors="pt")["input_ids"].to(device)
-    query_tokens = tokenizer(query_text, return_tensors="pt")["input_ids"].to(device)
+    doc_tokens = tokenizer(doc_text, return_tensors="pt", padding=True, truncation=True, max_length=512)["input_ids"].to(device)
+    query_tokens = tokenizer(query_text, return_tensors="pt", padding=True, truncation=True, max_length=512)["input_ids"].to(device)
     if batch_size > 1:
         doc_tokens = doc_tokens.repeat(batch_size, 1)
         query_tokens = query_tokens.repeat(batch_size, 1)
@@ -234,7 +234,7 @@ def test_cross_encoder_batch_scoring(model, tokenizer, batch_size=8):
 
     pairs = []
     pairs = [[query_text, doc_text] for _ in range(batch_size)]
-    inputs = tokenizer(pairs, return_tensors='pt')
+    inputs = tokenizer(pairs, return_tensors='pt', padding=True, truncation=True, max_length=512)
 
     # Warm-up.
     with torch.no_grad():
