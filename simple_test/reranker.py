@@ -62,26 +62,26 @@ def compute_cache_size(cache):
     Supports both DynamicCache (with key_cache/value_cache attributes)
     and legacy tuple format.
     """
-    # total_bytes = 0
-    # if hasattr(cache, "key_cache") and hasattr(cache, "value_cache"):
-    #     for tensor in cache.key_cache:
-    #         total_bytes += tensor.numel() * tensor.element_size()
-    #     for tensor in cache.value_cache:
-    #         total_bytes += tensor.numel() * tensor.element_size()
-    # elif isinstance(cache, tuple):
-    #     for layer in cache:
-    #         key, value = layer
-    #         total_bytes += key.numel() * key.element_size()
-    #         total_bytes += value.numel() * value.element_size()
-    # else:
-    #     logger.info("Warning: Unrecognized cache format.")
-    # return total_bytes
+    total_bytes = 0
+    if hasattr(cache, "key_cache") and hasattr(cache, "value_cache"):
+        for tensor in cache.key_cache:
+            total_bytes += tensor.numel() * tensor.element_size()
+        for tensor in cache.value_cache:
+            total_bytes += tensor.numel() * tensor.element_size()
+    elif isinstance(cache, tuple):
+        for layer in cache:
+            key, value = layer
+            total_bytes += key.numel() * key.element_size()
+            total_bytes += value.numel() * value.element_size()
+    else:
+        logger.info("Warning: Unrecognized cache format.")
+    return total_bytes
 
     # cache_size = asizeof.asizeof(cache)
 
-    cache_size = deep_getsizeof(cache)
+    # cache_size = deep_getsizeof(cache)
 
-    return cache_size
+    # return cache_size
 
 def measure_ttft_no_cache(model, full_input, device):
     """
@@ -263,6 +263,8 @@ def main():
     num_params = sum(p.numel() for p in mla.parameters())
     logger.info(f"Number of parameters: {num_params}")
     mla.eval()  # Set model to evaluation mode.
+    logger.info("MLA model architecture:")
+    logger.info(mla)
 
     logger.info("Initializing GFR1 model...")
     tokenizer_gfr = get_tokenizer_gfr()
@@ -286,6 +288,8 @@ def main():
     num_params = sum(p.numel() for p in gfr.parameters())
     logger.info(f"Number of parameters: {num_params}")
     gfr.eval()  # Set model to evaluation mode.
+    logger.info("GFR model architecture:")
+    logger.info(gfr)
 
     logger.info("Initializing CDR-Pythia...")
     pythia_model_name = "EleutherAI/pythia-410m"
@@ -298,26 +302,28 @@ def main():
     cdr_pythia.resize_token_embeddings(len(tokenizer_cdr_pythia))
     cdr_pythia.to(device) 
     cdr_pythia.eval()
+    logger.info("CDR-Pythia model architecture:")
+    logger.info(cdr_pythia)
 
-    logger.info("Initializing CDR-Mamba2...")
-    tokenizer_cdr_mamba2 = get_tokenizer_mamba2()
-    mamba2_config = Mamba2Config(
-        vocab_size=len(tokenizer_cdr_mamba2),
-        num_heads=16,
-        head_dim=64,
-        hidden_size=1024,
-        state_size=16,
-        n_groups=1,
-        expand=2,
-        chunk_size=64,
-        num_hidden_layers=64,
-    )
-    mamba2 = Mamba2ForSequenceScoring(mamba2_config)
-    mamba2.resize_token_embeddings(len(tokenizer_cdr_mamba2))
-    mamba2.to(device)
-    num_params = sum(p.numel() for p in mamba2.parameters())
-    logger.info(f"Number of parameters: {num_params}")
-    mamba2.eval()  # Set model to evaluation mode.
+    # logger.info("Initializing CDR-Mamba2...")
+    # tokenizer_cdr_mamba2 = get_tokenizer_mamba2()
+    # mamba2_config = Mamba2Config(
+    #     vocab_size=len(tokenizer_cdr_mamba2),
+    #     num_heads=16,
+    #     head_dim=64,
+    #     hidden_size=1024,
+    #     state_size=16,
+    #     n_groups=1,
+    #     expand=2,
+    #     chunk_size=64,
+    #     num_hidden_layers=64,
+    # )
+    # mamba2 = Mamba2ForSequenceScoring(mamba2_config)
+    # mamba2.resize_token_embeddings(len(tokenizer_cdr_mamba2))
+    # mamba2.to(device)
+    # num_params = sum(p.numel() for p in mamba2.parameters())
+    # logger.info(f"Number of parameters: {num_params}")
+    # mamba2.eval()  # Set model to evaluation mode.
 
     logger.info("Initializing Cross-encoder model (msmarco-minilm)...")
     msmarco_minilm = CrossEncoder(
@@ -331,6 +337,8 @@ def main():
     )
     num_params = sum(p.numel() for p in msmarco_minilm.model.parameters())
     logger.info(f"Number of parameters: {num_params}")
+    logger.info("Cross-encoder model (msmarco-minilm) architecture:")
+    logger.info(msmarco_minilm.model)
 
     logger.info("Initializing Cross-encoder model (BGE)...")
     bge = CrossEncoder(
@@ -344,6 +352,8 @@ def main():
     )
     num_params = sum(p.numel() for p in bge.model.parameters())
     logger.info(f"Number of parameters: {num_params}")    
+    logger.info("Cross-encoder model (BGE) architecture:")
+    logger.info(bge.model)
 
     # Test for various batch sizes.
     for batch_size in [1, 8, 16]:
