@@ -196,6 +196,9 @@ def main():
 
         avg_hits_rate = total_hits_rate / len(queries)
 
+        param_count = sum(p.numel() for p in model.parameters())
+        model_params = f"{int(param_count / 1e6)}M"  # e.g., "210M"
+
         # Store results
         model_results = {
             "model_id": model_id,
@@ -206,7 +209,8 @@ def main():
             "mrr": mrr,
             "top_k_accuracy": top_k_accuracy,
             "avg_inference_time_ms": avg_inference_time_ms,
-            "throughput_docs_per_sec": throughput_docs_per_sec
+            "throughput_docs_per_sec": throughput_docs_per_sec,
+            "params": model_params
         }
         all_model_results.append(model_results)
 
@@ -221,6 +225,7 @@ def main():
         logger.info(f"Top_K_Accuracy: {top_k_accuracy}")
         logger.info(f"Avg Inference Time (ms): {avg_inference_time_ms:.2f}")
         logger.info(f"Throughput (docs/sec): {throughput_docs_per_sec:.2f}")
+        logger.info(f"Parameters: {model_params}")
 
     # Log comparison table for all models
     logger.info("Comparison of all models:")
@@ -236,11 +241,12 @@ def main():
             result["mrr"].get("MRR@10", "-"),
             result["top_k_accuracy"].get("Top_K_Accuracy@10", "-"),
             result["avg_inference_time_ms"],
-            result["throughput_docs_per_sec"]
+            result["throughput_docs_per_sec"],
+            result["params"]
         ]
         comparison_table.append(row)
 
-    headers = ["Model", "NDCG@10", "MAP@10", "Recall@10", "Precision@10", "MRR@10", "Top_K_Accuracy@10", "Avg Inference Time (ms)", "Throughput (docs/sec)"]
+    headers = ["Model", "NDCG@10", "MAP@10", "Recall@10", "Precision@10", "MRR@10", "Top_K_Accuracy@10", "Avg Inference Time (ms)", "Throughput (docs/sec)", "Params"]
     logger.info("\n" + tabulate(comparison_table, headers=headers, tablefmt="grid"))
 
     # --- Save the comparison table to a CSV file ---
@@ -255,12 +261,21 @@ if __name__ == "__main__":
     main()
 
     """
+    Datasets:
+    - msmarco
+    - quora
+
+    Flat Indexes:
+    - msmarco-v1-passage
+    - beir-v1.0.0-quora.flat
+
     Example usage:
 
     python -m evaluation.rerank \
-    --dataset msmarco \
+    --dataset quora \
     --split test \
-    --index_name msmarco-v1-passage \
+    --index_name beir-v1.0.0-quora.flat \
+    --max_doc_length 512 \
     --models gfr:./gfr_finetune_ckpts_210m_bgedata/checkpoint-5000 gfr:./gfr_finetune_ckpts_210m_bgedata/checkpoint-15000 gfr:./gfr_finetune_ckpts_210m_bgedata/checkpoint-25000 gfr:./gfr_finetune_ckpts_210m_bgedata_final standard:cross-encoder/ms-marco-MiniLM-L-12-v2 standard:mixedbread-ai/mxbai-rerank-large-v1 standard:jinaai/jina-reranker-v2-base-multilingual standard:BAAI/bge-reranker-v2-m3 \
     --log_file rerank_results.log \
     --batch_size 16 \
