@@ -327,19 +327,19 @@ def main():
     logger.info("Initializing Cross-encoder model (msmarco-minilm)...")
     tokenizer_msmarco_minilm = AutoTokenizer.from_pretrained('cross-encoder/ms-marco-MiniLM-L-12-v2')
     msmarco_minilm = AutoModelForSequenceClassification.from_pretrained('cross-encoder/ms-marco-MiniLM-L-12-v2')
-    num_params = sum(p.numel() for p in msmarco_minilm.model.parameters())
+    num_params = sum(p.numel() for p in msmarco_minilm.parameters())
     logger.info(f"Number of parameters: {num_params}")
     logger.info("Cross-encoder model (msmarco-minilm) architecture:")
-    logger.info(msmarco_minilm.model)
+    logger.info(msmarco_minilm)
 
     logger.info("Initializing Cross-encoder model (BGE)...")
     tokenizer_bge = AutoTokenizer.from_pretrained('BAAI/bge-reranker-v2-m3')
     bge = AutoModelForSequenceClassification.from_pretrained('BAAI/bge-reranker-v2-m3')
     bge.eval()
-    num_params = sum(p.numel() for p in bge.model.parameters())
+    num_params = sum(p.numel() for p in bge.parameters())
     logger.info(f"Number of parameters: {num_params}")    
     logger.info("Cross-encoder model (BGE) architecture:")
-    logger.info(bge.model)
+    logger.info(bge)
 
     # Test for various batch sizes.
     for batch_size in [1, 8, 16]:
