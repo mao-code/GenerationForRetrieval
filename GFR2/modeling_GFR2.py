@@ -1708,8 +1708,6 @@ class GFR2ForCausalLM(GFR2PreTrainedModel, GenerationMixin):
         return self.model
 
     @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-    @add_start_docstrings_to_model_forward(GFR2_INPUTS_DOCSTRING)
-    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -1859,22 +1857,6 @@ class GFR2ForCausalLM(GFR2PreTrainedModel, GenerationMixin):
         )
         return model_inputs
 
-
-@add_start_docstrings(
-    """
-    The GFR2 Model with a sequence classification head on top (linear layer).
-
-    [`GFR2ForSequenceClassification`] uses the last token in order to do the classification, as other causal models
-    (e.g. GPT-2) do.
-
-    Since it does classification on the last token, it requires to know the position of the last token. If a
-    `pad_token_id` is defined in the configuration, it finds the last token that is not a padding token in each row. If
-    no `pad_token_id` is defined, it simply takes the last value in each row of the batch. Since it cannot guess the
-    padding tokens when `inputs_embeds` are passed instead of `input_ids`, it does the same (take the last value in
-    each row of the batch).
-    """,
-    GFR2_START_DOCSTRING,
-)
 class GFR2ForSequenceClassification(GFR2PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
@@ -1892,7 +1874,6 @@ class GFR2ForSequenceClassification(GFR2PreTrainedModel):
     def set_input_embeddings(self, value):
         self.model.embed_tokens = value
 
-    @add_start_docstrings_to_model_forward(GFR2_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,

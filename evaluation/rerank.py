@@ -16,11 +16,8 @@ from pyserini.search.lucene import LuceneSearcher
 from pyserini.search.faiss import FaissSearcher
 
 # Import the tokenizer and the reranker model for GFR.
-from transformers import LlamaTokenizer
+from transformers import LlamaTokenizer, AutoModelForSequenceClassification, AutoTokenizer
 from GFR.modeling_GFR import GFRForSequenceScoring
-
-# Import CrossEncoder for standard models.
-from sentence_transformers import CrossEncoder
 
 def main():
     # Argument parser setup
@@ -29,6 +26,7 @@ def main():
     parser.add_argument("--split", type=str, default="test", help="Dataset split to use (e.g., test)")
     parser.add_argument("--models", type=str, nargs='+', required=True, 
                         help="List of models to test, in the form 'type:checkpoint' (e.g., 'gfr:/path/to/gfr', 'standard:cross-encoder/ms-marco-MiniLM-L-12-v2')")
+    parser.add_argument("--max_doc_length", type=int, default=512, help="Maximum document length for the model")
     parser.add_argument("--log_file", type=str, default="test_results.log", help="File to log the evaluation results")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for reranking")
     parser.add_argument("--top_k", type=int, default=100, help="Number of top BM25 results to retrieve per query")
@@ -105,15 +103,8 @@ def main():
             model.eval()
         elif model_type == "standard":
             logger.info(f"Loading standard CrossEncoder model: {model_checkpoint}")
-            model = CrossEncoder(
-                model_checkpoint, 
-                device=device, 
-                automodel_args={
-                    "torch_dtype": "auto",
-                    "attn_implementation": "eager"  # Explicitly disable Flash Attention
-                }, 
-                trust_remote_code=True
-            )
+            tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+            model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint)
         else:
             raise ValueError(f"Invalid model type: {model_type}. Must be 'gfr' or 'standard'.")
 
@@ -145,7 +136,7 @@ def main():
                 for i in range(0, len(candidate_docs), args.batch_size):
                     batch_docs = candidate_docs[i:i + args.batch_size]
                     batch_queries = [query_text] * len(batch_docs)
-                    input_ids, token_type_ids, attention_mask = model.prepare_input(batch_docs, batch_queries, tokenizer)
+                    input_ids, token_type_ids, attention_mask = model.prepare_input(batch_docs, batch_queries, tokenizer, max_length=args.max_doc_length)
                     input_ids = input_ids.to(device)
                     token_type_ids = token_type_ids.to(device)
                     attention_mask = attention_mask.to(device)
@@ -168,8 +159,34 @@ def main():
                     scores.extend(batch_scores)
             elif model_type == "standard":
                 # Standard CrossEncoder reranking
-                pairs = [(query_text, doc) for doc in candidate_docs]
+                scores = []
+                for i in range(0, len(candidate_docs), args.batch_size):
+                    batch_docs = candidate_docs[i:i + args.batch_size]
+                    pairs = [[query_text, doc] for doc in batch_docs]
+
+                    inputs = tokenizer(pairs, return_tensors='pt', padding=True, truncation=True, max_length=args.max_doc_length)
+
+                    inputs = {k: v.to(device) for k, v in inputs.items()}
+
+                    start_time = time.time()
+                    with torch.no_grad():
+                        scores = model(**inputs, return_dict=True).logits.view(-1, ).float()
+                    elapsed = time.time() - start_time
+
+                    total_inference_time += elapsed
+                    total_docs_processed += len(batch_docs)
+
+                    batch_scores = output["logits"].squeeze(-1).tolist()
+                    if isinstance(batch_scores, float):
+                        batch_scores = [batch_scores]
+                    scores.extend(batch_scores)
+
+
+
+
+
                 start_time = time.time()
+
                 scores = model.predict(pairs, batch_size=args.batch_size)
                 elapsed = time.time() - start_time
                 total_inference_time += elapsed
