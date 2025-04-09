@@ -1,6 +1,5 @@
 import time
 import torch
-from transformers import LlamaTokenizer
 from MLA_CDR.configuration_mla import MLAConfig
 from MLA_CDR.modeling_mla import MLAForSequenceScoring
 from MLA_CDR.tokenizer_utils import get_tokenizer as get_tokenizer_mla
@@ -18,8 +17,7 @@ from cache.cache import (
     move_cache_to_gpu,
     score_with_cache,
 )
-from transformers import AutoTokenizer, AutoModel, AutoConfig
-from sentence_transformers import CrossEncoder
+from transformers import AutoModel, AutoConfig, AutoModelForSequenceClassification, AutoTokenizer
 
 from pympler import asizeof
 import logging
@@ -158,8 +156,8 @@ def test_cache_vs_noncache_batch_scoring(model, tokenizer, device, batch_size=8)
 
     # --- Non-cached inference (full input) ---
     # Tokenize document and query.
-    doc_tokens = tokenizer.encode(doc_text, return_tensors="pt").to(device)
-    query_tokens = tokenizer.encode(query_text, return_tensors="pt").to(device)
+    doc_tokens = tokenizer(doc_text, return_tensors="pt")["input_ids"].to(device)
+    query_tokens = tokenizer(query_text, return_tensors="pt")["input_ids"].to(device)
     if batch_size > 1:
         doc_tokens = doc_tokens.repeat(batch_size, 1)
         query_tokens = query_tokens.repeat(batch_size, 1)
@@ -229,22 +227,23 @@ def test_cache_vs_noncache_batch_scoring(model, tokenizer, device, batch_size=8)
     logger.info(f"Movement overhead in score_with_cache:{movement_overhead_in_score*1000:.2f} ms")
     logger.info(f"Cache size:                          {cache_size_mb:.2f} MB\n")
 
-def test_cross_encoder_batch_scoring(model, batch_size=8):
+def test_cross_encoder_batch_scoring(model, tokenizer, batch_size=8):
     # Define sample texts.
     doc_text = "word " * 512    # ~512 tokens per document
     query_text = "query " * 15   # ~15 tokens per query
 
     pairs = []
-    pairs = [(query_text, doc_text) for _ in range(batch_size)]
+    pairs = [[query_text, doc_text] for _ in range(batch_size)]
+    inputs = tokenizer(pairs, return_tensors='pt')
 
     # Warm-up.
     with torch.no_grad():
-        scores = model.predict(pairs)
+        scores = model(**inputs, return_dict=True).logits.view(-1, ).float()
 
     # Timed run.
     with torch.no_grad():
         start_time = time.time()
-        scores = model.predict(pairs)
+        scores = model(**inputs, return_dict=True).logits.view(-1, ).float()
         elapsed = time.time() - start_time
 
     logger.info(f"Non-cached inference time (full input): {elapsed * 1000} ms")
@@ -326,30 +325,17 @@ def main():
     # mamba2.eval()  # Set model to evaluation mode.
 
     logger.info("Initializing Cross-encoder model (msmarco-minilm)...")
-    msmarco_minilm = CrossEncoder(
-        "cross-encoder/ms-marco-MiniLM-L-12-v2", 
-        device=device, 
-        automodel_args={
-            "torch_dtype": "auto",
-            "attn_implementation": "eager"  # Explicitly disable Flash Attention
-        }, 
-        trust_remote_code=True
-    )
+    tokenizer_msmarco_minilm = AutoTokenizer.from_pretrained('cross-encoder/ms-marco-MiniLM-L-12-v2')
+    msmarco_minilm = AutoModelForSequenceClassification.from_pretrained('cross-encoder/ms-marco-MiniLM-L-12-v2')
     num_params = sum(p.numel() for p in msmarco_minilm.model.parameters())
     logger.info(f"Number of parameters: {num_params}")
     logger.info("Cross-encoder model (msmarco-minilm) architecture:")
     logger.info(msmarco_minilm.model)
 
     logger.info("Initializing Cross-encoder model (BGE)...")
-    bge = CrossEncoder(
-        "BAAI/bge-reranker-v2-m3", 
-        device=device, 
-        automodel_args={
-            "torch_dtype": "auto",
-            "attn_implementation": "eager"  # Explicitly disable Flash Attention
-        }, 
-        trust_remote_code=True
-    )
+    tokenizer_bge = AutoTokenizer.from_pretrained('BAAI/bge-reranker-v2-m3')
+    bge = AutoModelForSequenceClassification.from_pretrained('BAAI/bge-reranker-v2-m3')
+    bge.eval()
     num_params = sum(p.numel() for p in bge.model.parameters())
     logger.info(f"Number of parameters: {num_params}")    
     logger.info("Cross-encoder model (BGE) architecture:")
@@ -370,10 +356,10 @@ def main():
         # test_noncache_batch_scoring(mamba2, tokenizer_cdr_mamba2, device, batch_size=batch_size) # No Mamba Cache available, now
 
         logger.info(f"Testing Cross-encoder model (msmarco-minilm)... {"-"* 20}")
-        test_cross_encoder_batch_scoring(msmarco_minilm, batch_size=batch_size)
+        test_cross_encoder_batch_scoring(msmarco_minilm, tokenizer_msmarco_minilm, batch_size=batch_size)
 
         logger.info(f"Testing Cross-encoder model (bge))... {"-"* 20}")
-        test_cross_encoder_batch_scoring(bge, batch_size=batch_size)
+        test_cross_encoder_batch_scoring(bge, tokenizer_bge, batch_size=batch_size)
 
 if __name__ == "__main__":
     main()
