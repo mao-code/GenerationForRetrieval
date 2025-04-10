@@ -201,75 +201,6 @@ class GFR2HybridDynamicCache(DynamicCache):
         self.conv_states.zero_()
         self.ssm_states.zero_()
 
-
-class GFR2RotaryEmbedding(nn.Module):
-    def __init__(
-        self,
-        config: GFR2Config,
-        device=None,
-    ):
-        super().__init__()
-        # BC: "rope_type" was originally "type"
-        if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
-            self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
-        else:
-            self.rope_type = "default"
-        self.max_seq_len_cached = config.max_position_embeddings
-        self.original_max_seq_len = config.max_position_embeddings
-
-        self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
-        # we cannot use the config here to parameterize because of a factor 2 for the head_dim
-        inv_freq, self.attention_scaling = self.rope_init_fn(
-            device=device, base=config.rope_theta, dim=config.attention_head_dim
-        )
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.original_inv_freq = self.inv_freq
-
-    def _dynamic_frequency_update(self, position_ids, device):
-        """
-        dynamic RoPE layers should recompute `inv_freq` in the following situations:
-        1 - growing beyond the cached sequence length (allow scaling)
-        2 - the current sequence length is in the original scale (avoid losing precision with small sequences)
-        """
-        seq_len = torch.max(position_ids) + 1
-        if seq_len > self.max_seq_len_cached:  # growth
-            inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device, seq_len=seq_len)
-            self.register_buffer("inv_freq", inv_freq, persistent=False)  # TODO joao: may break with compilation
-            self.max_seq_len_cached = seq_len
-
-        if seq_len < self.original_max_seq_len and self.max_seq_len_cached > self.original_max_seq_len:  # reset
-            # This .to() is needed if the model has been moved to a device after being initialized (because
-            # the buffer is automatically moved, but not the original copy)
-            self.original_inv_freq = self.original_inv_freq.to(device)
-            self.register_buffer("inv_freq", self.original_inv_freq, persistent=False)
-            self.max_seq_len_cached = self.original_max_seq_len
-
-    @torch.no_grad()
-    def forward(self, x, position_ids):
-        if "dynamic" in self.rope_type:
-            self._dynamic_frequency_update(position_ids, device=x.device)
-
-        # Core RoPE block
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
-        position_ids_expanded = position_ids[:, None, :].float()
-        # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
-        device_type = x.device.type
-        device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
-        with torch.autocast(device_type=device_type, enabled=False):
-            freqs = (
-                inv_freq_expanded.to(device=x.device, dtype=torch.float) @ position_ids_expanded.float()
-            ).transpose(1, 2)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos()
-            sin = emb.sin()
-
-        # Advanced RoPE types (e.g. yarn) apply a post-processing scaling factor, equivalent to scaling attention
-        cos = cos * self.attention_scaling
-        sin = sin * self.attention_scaling
-
-        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
-
 class GFR2MLARotaryEmbedding(nn.Module):
     def __init__(self, config: GFR2Config, device=None):
         super().__init__()
@@ -440,145 +371,6 @@ def apply_rotary_pos_emb_interleave(q, k, cos, sin, position_ids=None, unsqueeze
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
-class GFR2Attention(nn.Module):
-    """
-    Multi-headed attention from 'Attention Is All You Need' paper. Modified to use sliding window attention: Longformer
-    and "Generating Long Sequences with Sparse Transformers".
-
-    Adapted from transformers.models.mistral.modeling_mistral.MistralAttention:
-    The input dimension here is attention_hidden_size = 2 * hidden_size, and head_dim = attention_hidden_size // num_heads.
-    The extra factor of 2 comes from the input being the concatenation of original_hidden_states with the output of the previous (mamba) layer
-    (see fig. 2 in https://arxiv.org/pdf/2405.16712).
-    Additionally, replaced
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim) with
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim/2)
-
-    Multi-headed attention from 'Attention Is All You Need' paper.
-
-    Adapted from transformers.models.mistral.modeling_mistral.MistralAttention:
-    The input dimension here is attention_hidden_size = 2 * hidden_size, and head_dim = attention_hidden_size // num_heads.
-    The extra factor of 2 comes from the input being the concatenation of original_hidden_states with the output of the previous (mamba) layer
-    (see fig. 2 in https://arxiv.org/pdf/2405.16712).
-    Additionally, replaced
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim) with
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim/2)
-    Finally, this attention layer contributes to tied transformer blocks aimed to increasing compute without increasing model size. Because this
-    layer is tied, un-tied adapters (formally the same as LoRA but used in the base model) modules are added to the q, k, v projectors to increase
-    expressivity with a small memory overhead (see Fig. 2 of https://arxiv.org/pdf/2411.15242).
-    """
-
-    def __init__(
-        self,
-        config: GFR2Config,
-        layer_idx: Optional[int] = None,
-        num_fwd_mem_blocks: Optional[int] = None,
-        block_id: Optional[int] = None,
-    ):
-        super().__init__()
-        self.config = config
-        self.layer_idx = layer_idx
-
-        self.attention_hidden_size = config.attention_hidden_size
-        self.head_dim = config.attention_head_dim
-        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.max_position_embeddings = config.max_position_embeddings
-        self.scaling = (self.head_dim / 2) ** -0.5
-        self.is_causal = True
-        self.attention_dropout = config.attention_dropout
-
-        self.q_proj = nn.Linear(config.attention_hidden_size, config.num_attention_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(config.attention_hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(config.attention_hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
-        self.num_fwd_mem_blocks = num_fwd_mem_blocks
-        self.layer_block_map = config.hybrid_layer_ids
-        self.block_id = block_id
-
-        if config.use_shared_attention_adapter:
-            self.linear_q_adapter_list = nn.ModuleList([])
-            self.linear_k_adapter_list = nn.ModuleList([])
-            self.linear_v_adapter_list = nn.ModuleList([])
-
-            for i in range(self.num_fwd_mem_blocks):
-                if i % config.num_mem_blocks == block_id:
-                    linear_q_adapter = nn.Sequential(
-                        nn.Linear(self.attention_hidden_size, self.config.adapter_rank, bias=False),
-                        nn.Linear(self.config.adapter_rank, self.attention_hidden_size, bias=False),
-                    )
-                    linear_k_adapter = nn.Sequential(
-                        nn.Linear(self.attention_hidden_size, self.config.adapter_rank, bias=False),
-                        nn.Linear(self.config.adapter_rank, self.attention_hidden_size, bias=False),
-                    )
-                    linear_v_adapter = nn.Sequential(
-                        nn.Linear(self.attention_hidden_size, self.config.adapter_rank, bias=False),
-                        nn.Linear(self.config.adapter_rank, self.attention_hidden_size, bias=False),
-                    )
-                else:
-                    linear_q_adapter = nn.Identity()
-                    linear_k_adapter = nn.Identity()
-                    linear_v_adapter = nn.Identity()
-                self.linear_q_adapter_list.append(linear_q_adapter)
-                self.linear_k_adapter_list.append(linear_k_adapter)
-                self.linear_v_adapter_list.append(linear_v_adapter)
-
-        self.layer_dic = {value: index for index, value in enumerate(self.layer_block_map)}
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        layer_idx: int,
-        attention_mask: Optional[torch.Tensor] = None,
-        past_key_value: Optional[GFR2HybridDynamicCache] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
-        if self.config.use_shared_attention_adapter:
-            adapter_layer_idx = self.layer_dic[layer_idx]
-            query_states = query_states + self.linear_q_adapter_list[adapter_layer_idx](hidden_states)
-            key_states = key_states + self.linear_k_adapter_list[adapter_layer_idx](hidden_states)
-            value_states = value_states + self.linear_v_adapter_list[adapter_layer_idx](hidden_states)
-
-        query_states = query_states.view(hidden_shape).transpose(1, 2)
-        key_states = key_states.view(hidden_shape).transpose(1, 2)
-        value_states = value_states.view(hidden_shape).transpose(1, 2)
-
-        if self.config.use_mem_rope:
-            cos, sin = position_embeddings
-            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
-        if past_key_value is not None:
-            key_states, value_states = past_key_value.update(key_states, value_states, layer_idx)
-
-        attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            if self.config._attn_implementation == "sdpa" and kwargs.get("output_attentions", False):
-                logger.warning_once(
-                    "`torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to "
-                    'eager attention. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
-                )
-            else:
-                attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
-
-        attn_output, attn_weights = attention_interface(
-            self,
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            dropout=0.0 if not self.training else self.attention_dropout,
-            scaling=self.scaling,
-            **kwargs,
-        )
-
-        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-        attn_output = self.o_proj(attn_output)
-        return attn_output, attn_weights
 
 def yarn_get_mscale(scale=1, mscale=1):
     if scale <= 1:
@@ -1196,45 +988,20 @@ class GFR2MambaMixer(nn.Module):
         return self.torch_forward(hidden_states, cache_params, attention_mask)
 
 class GFR2MLP(nn.Module):
-    def __init__(self, config: GFR2Config, num_fwd_mem_blocks=None, block_id: Optional[int] = None, concat_input: Optional[bool] = False):
-        """
-        This MLP layer contributes to tied transformer blocks aimed to increasing compute without increasing model size. Because this layer
-        is tied, un-tied adapter modules (formally same as LoRA, but used in the base model) are added to the up and gate projectors to increase expressivity with a small memory overhead.
-        """
+    def __init__(self, config, concat_input: Optional[bool] = False):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size * (2 if concat_input else 1)
         self.intermediate_size = config.intermediate_size
-        self.num_fwd_mem_blocks = num_fwd_mem_blocks
-        self.block_id = block_id
 
-        self.gate_up_proj = nn.Linear(self.hidden_size, 2 * self.intermediate_size, bias=config.add_bias_linear)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=config.add_bias_linear)
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
-        self.gate_up_proj_adapter_list = nn.ModuleList([])
-        for i in range(self.num_fwd_mem_blocks):
-            if i % config.num_mem_blocks == block_id:
-                gate_up_proj_adapter = nn.Sequential(
-                    nn.Linear(self.config.hidden_size, self.config.adapter_rank, bias=False),
-                    nn.Linear(self.config.adapter_rank, 2 * self.intermediate_size, bias=False),
-                )
-            else:
-                gate_up_proj_adapter = nn.Identity()
-            self.gate_up_proj_adapter_list.append(gate_up_proj_adapter)
-
-        layer_block_map = config.hybrid_layer_ids
-        self.layer_dic = {value: index for index, value in enumerate(layer_block_map)}
-
-    def forward(self, hidden_state, layer_idx=None):
-        gate_up_state = self.gate_up_proj(hidden_state)
-        layer_idx = self.layer_dic[layer_idx]
-        gate_up_state = gate_up_state + self.gate_up_proj_adapter_list[layer_idx](hidden_state)
-
-        gate_up_state = torch.chunk(gate_up_state, 2, dim=-1)
-        hidden_state = self.act_fn(gate_up_state[0]) * gate_up_state[1]
-        output = self.down_proj(hidden_state)
-        return output
+    def forward(self, x):
+        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return down_proj
 
 class GFR2AttentionDecoderLayer(nn.Module):
     def __init__(self, config: GFR2Config, block_id: Optional[int] = None, layer_idx: Optional[int] = None, concat_input: Optional[bool] = False):
@@ -1242,15 +1009,13 @@ class GFR2AttentionDecoderLayer(nn.Module):
 
         self.block_id = block_id
         self.layer_idx = layer_idx
-        num_gs = len(config.hybrid_layer_ids)
         attn_hidden_size = config.hidden_size * (2 if concat_input else 1)
 
         self.input_layernorm = GFR2RMSNorm(attn_hidden_size, eps=config.rms_norm_eps)
-        # self.self_attn = GFR2Attention(config, layer_idx=-1, num_fwd_mem_blocks=num_gs, block_id=block_id)
         self.self_attn = GFR2MultiHeadLatentAttention(config, layer_idx=-1, concat_input=concat_input)
 
         self.pre_ff_layernorm = GFR2RMSNorm(attn_hidden_size, eps=config.rms_norm_eps)
-        self.feed_forward = GFR2MLP(config, num_fwd_mem_blocks=num_gs, block_id=block_id, concat_input=concat_input)
+        self.feed_forward = GFR2MLP(config, block_id=block_id, concat_input=concat_input)
 
         self.concat_input = concat_input
 
@@ -1531,7 +1296,7 @@ class GFR2Model(GFR2PreTrainedModel):
                 logger.warning_once(
                     "`use_long_context` set to `True`: using rescaled `rope_theta` and extended `max_position_embeddings`."
                 )
-            self.rotary_emb = GFR2RotaryEmbedding(config)
+            self.rotary_emb = GFR2MLARotaryEmbedding(config)
 
         self.gradient_checkpointing = False
 
@@ -2337,4 +2102,4 @@ class GFRForSequenceScoring(GFR2PreTrainedModel):
         
         return input_ids, token_type_ids, attention_mask
 
-__all__ = ["GFR2ForCausalLM", "GFR2ForSequenceClassification", "GFR2Model", "GFR2ModelWithTokenTypes", "GFR2PreTrainedModel"]
+__all__ = ["GFR2ForCausalLM", "GFR2ForSequenceClassification", "GFRForSequenceScoring", "GFR2Model", "GFR2ModelWithTokenTypes", "GFR2PreTrainedModel"]
