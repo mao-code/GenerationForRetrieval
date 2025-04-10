@@ -1791,6 +1791,13 @@ class GFR2ForCausalLM(GFR2PreTrainedModel, GenerationMixin):
                 self.config, input_ids.shape[0], dtype=self.dtype, device=self.device
             )
 
+        # If past_key_values is not a GFRHybridDynamicCache, set it forcely
+        if not isinstance(past_key_values, GFR2HybridDynamicCache):
+            print("Got a non-GFR2 cache, set it forcely")
+            past_key_values = GFR2HybridDynamicCache(
+                self.config, input_ids.shape[0], dtype=self.dtype, device=self.device
+            )
+
         if attention_mask is not None and position_ids is None:
             # create position_ids on the fly for batch generation
             position_ids = attention_mask.long().cumsum(-1) - 1
