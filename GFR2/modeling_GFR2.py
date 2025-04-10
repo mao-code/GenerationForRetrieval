@@ -1363,8 +1363,9 @@ class GFR2Model(GFR2PreTrainedModel):
             past_key_values = GFR2HybridDynamicCache(self.config, batch_size, dtype=self.dtype, device=self.device)
 
         if cache_position is None:
+            first_transformer_layer_id = 0
             past_seen_tokens = (
-                past_key_values.get_seq_length(layer_idx=self.first_transformer_layer_id)
+                past_key_values.get_seq_length(layer_idx=first_transformer_layer_id)
                 if past_key_values is not None
                 else 0
             )
