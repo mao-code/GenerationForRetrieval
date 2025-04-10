@@ -3,7 +3,7 @@
 
 import torch
 from GFR2.configuration_GFR2 import GFR2Config
-from GFR2.modeling_GFR2 import GFR2Model, GFR2ModelForCausalLM, GFR2ModelForSequenceScoring
+from GFR2.modeling_GFR2 import GFR2Model, GFR2ForCausalLM, GFR2ForSequenceScoring
 from GFR2.tokenizer_utils import get_tokenizer
 import logging
 
@@ -26,12 +26,12 @@ def main():
     )
 
     # Instantiate the GFR2 model for causal language modeling.
-    model_for_causallm = GFR2ModelForCausalLM(config).to('cuda')
+    model_for_causallm = GFR2ForCausalLM(config).to('cuda')
     num_params = sum(p.numel() for p in model_for_causallm.parameters())
     print(f"Number of parameters for causal LM: {num_params}")
 
     # Instantiate the GFR2 model for sequence scoring.
-    model_for_scoring = GFR2ModelForSequenceScoring(config).to('cuda')
+    model_for_scoring = GFR2ForSequenceScoring(config).to('cuda')
     num_params = sum(p.numel() for p in model_for_scoring.parameters())
     print(f"Number of parameters for sequence scoring model: {num_params}")
 
@@ -64,5 +64,5 @@ if __name__ == '__main__':
     main()
 
     """
-    python -m script.gfr_test
+    python -m simple_test.gfr2_test
     """
