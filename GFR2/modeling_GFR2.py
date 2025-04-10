@@ -1390,8 +1390,9 @@ class GFR2Model(GFR2PreTrainedModel):
                     causal_mask,
                     past_key_values,
                     output_attentions,
+                    position_embeddings,
                     use_cache,
-                    cache_position
+                    cache_position,
                 )
             else:
                 layer_outputs = self.layers[layer_index](
@@ -1401,6 +1402,7 @@ class GFR2Model(GFR2PreTrainedModel):
                     causal_mask=causal_mask,
                     past_key_value=past_key_values,
                     output_attentions=output_attentions,
+                    position_embeddings=position_embeddings,
                     use_cache=use_cache,
                     cache_position=cache_position,
                     **kwargs,
@@ -1481,6 +1483,7 @@ class GFR2Model(GFR2PreTrainedModel):
                 causal_mask=causal_mask,
                 past_key_value=past_key_values,
                 output_attentions=output_attentions,
+                position_embeddings=position_embeddings,
                 use_cache=use_cache,
                 cache_position=cache_position,
                 **kwargs,
