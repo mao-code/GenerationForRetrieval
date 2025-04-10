@@ -1004,10 +1004,9 @@ class GFR2MLP(nn.Module):
         return down_proj
 
 class GFR2AttentionDecoderLayer(nn.Module):
-    def __init__(self, config: GFR2Config, block_id: Optional[int] = None, layer_idx: Optional[int] = None, concat_input: Optional[bool] = False):
+    def __init__(self, config: GFR2Config, layer_idx: Optional[int] = None, concat_input: Optional[bool] = False):
         super().__init__()
 
-        self.block_id = block_id
         self.layer_idx = layer_idx
         attn_hidden_size = config.hidden_size * (2 if concat_input else 1)
 
@@ -1015,7 +1014,7 @@ class GFR2AttentionDecoderLayer(nn.Module):
         self.self_attn = GFR2MultiHeadLatentAttention(config, layer_idx=-1, concat_input=concat_input)
 
         self.pre_ff_layernorm = GFR2RMSNorm(attn_hidden_size, eps=config.rms_norm_eps)
-        self.feed_forward = GFR2MLP(config, block_id=block_id, concat_input=concat_input)
+        self.feed_forward = GFR2MLP(config, concat_input=concat_input)
 
         self.concat_input = concat_input
 
