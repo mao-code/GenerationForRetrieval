@@ -1011,7 +1011,7 @@ class GFR2AttentionDecoderLayer(nn.Module):
         attn_hidden_size = config.hidden_size * (2 if concat_input else 1)
 
         self.input_layernorm = GFR2RMSNorm(attn_hidden_size, eps=config.rms_norm_eps)
-        self.self_attn = GFR2MultiHeadLatentAttention(config, layer_idx=-1, concat_input=concat_input)
+        self.self_attn = GFR2MultiHeadLatentAttention(config, layer_idx=layer_idx, concat_input=concat_input)
 
         self.pre_ff_layernorm = GFR2RMSNorm(attn_hidden_size, eps=config.rms_norm_eps)
         self.feed_forward = GFR2MLP(config, concat_input=concat_input)
