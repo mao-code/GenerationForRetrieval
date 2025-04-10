@@ -1920,7 +1920,7 @@ class GFR2ForSequenceClassification(GFR2PreTrainedModel):
             attentions=transformer_outputs.attentions,
         )
 
-class GFRForSequenceScoring(GFR2PreTrainedModel):
+class GFR2ForSequenceScoring(GFR2PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.config = config
@@ -2102,4 +2102,4 @@ class GFRForSequenceScoring(GFR2PreTrainedModel):
         
         return input_ids, token_type_ids, attention_mask
 
-__all__ = ["GFR2ForCausalLM", "GFR2ForSequenceClassification", "GFRForSequenceScoring", "GFR2Model", "GFR2ModelWithTokenTypes", "GFR2PreTrainedModel"]
+__all__ = ["GFR2ForCausalLM", "GFR2ForSequenceClassification", "GFR2ForSequenceScoring", "GFR2Model", "GFR2ModelWithTokenTypes", "GFR2PreTrainedModel"]
