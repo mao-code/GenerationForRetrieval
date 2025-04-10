@@ -112,7 +112,6 @@ class GFR2HybridDynamicCache(DynamicCache):
         self, config: GFR2Config, batch_size: int, dtype: torch.dtype = torch.float16, device: Optional[str] = None
     ):
         self.dtype = dtype
-        self.layers_block_type = config.layers_block_type
         self.has_previous_state = False
         self.intermediate_size = int(config.mamba_expand * config.hidden_size)
         self.ssm_state_size = config.mamba_d_state
