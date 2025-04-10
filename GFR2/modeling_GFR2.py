@@ -396,12 +396,14 @@ class GFR2MultiHeadLatentAttention(nn.Module):
         self.attention_dropout = config.attention_dropout
         self.num_heads = config.num_attention_heads
         self.rope_theta = config.rope_theta
+
+        self.qk_rope_head_dim = config.qk_rope_head_dim  # Fixed at 64
+        self.qk_head_dim = self.dim_scale * config.qk_head_dim  # 128 or 256 based on dim_scale
+        self.qk_nope_head_dim = self.qk_head_dim - self.qk_rope_head_dim  # Adjust accordingly
+
         self.q_lora_rank = self.dim_scale * config.q_lora_rank
-        self.qk_rope_head_dim = self.dim_scale * config.qk_rope_head_dim
         self.kv_lora_rank = self.dim_scale * config.kv_lora_rank
         self.v_head_dim = self.dim_scale * config.v_head_dim
-        self.qk_nope_head_dim = self.dim_scale * config.qk_nope_head_dim
-        self.qk_head_dim = self.dim_scale * config.qk_head_dim
 
         self.is_causal = True
         self.q_a_proj = nn.Linear(self.attn_hidden_size, config.q_lora_rank, bias=config.attention_bias)
