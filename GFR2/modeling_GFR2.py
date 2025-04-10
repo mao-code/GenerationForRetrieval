@@ -1270,21 +1270,21 @@ class GFR2Model(GFR2PreTrainedModel):
             self.layers.append(
                 GFR2MambaDecoderLayer(
                     config,
-                    layer_idx=base_idx + 6
+                    layer_idx=base_idx + 5
                 )
             )
             # 8) Mamba 5.
             self.layers.append(
                 GFR2MambaDecoderLayer(
                     config,
-                    layer_idx=base_idx + 7
+                    layer_idx=base_idx + 6
                 )
             )
             # 9) Mamba 6.
             self.layers.append(
                 GFR2MambaDecoderLayer(
                     config,
-                    layer_idx=base_idx + 8
+                    layer_idx=base_idx + 7
                 )
             )
 

@@ -22,7 +22,7 @@ def main():
     config = GFR2Config(
         vocab_size=len(tokenizer), 
         num_hidden_blocks=3,        # N GFR2Blocks,
-        num_layers_per_block=9,     # 9 layers per block
+        num_layers_per_block=8,     # 8 layers per block
     )
 
     # Instantiate the GFR2 model for causal language modeling.
