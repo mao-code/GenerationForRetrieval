@@ -1260,28 +1260,32 @@ class GFR2Model(GFR2PreTrainedModel):
             )
             # 6) Linear projection to convert 2*hidden_size back to hidden_size.
             self.layers.append(
-                nn.Linear(2 * config.hidden_size, config.hidden_size, bias=True)
+                nn.Linear(
+                    2 * config.hidden_size, 
+                    config.hidden_size, bias=True,
+                    layer_idx=base_idx + 5
+                )
             )
 
             # 7) Mamba 4.
             self.layers.append(
                 GFR2MambaDecoderLayer(
                     config,
-                    layer_idx=base_idx + 5
+                    layer_idx=base_idx + 6
                 )
             )
             # 8) Mamba 5.
             self.layers.append(
                 GFR2MambaDecoderLayer(
                     config,
-                    layer_idx=base_idx + 6
+                    layer_idx=base_idx + 7
                 )
             )
             # 9) Mamba 6.
             self.layers.append(
                 GFR2MambaDecoderLayer(
                     config,
-                    layer_idx=base_idx + 7
+                    layer_idx=base_idx + 8
                 )
             )
 
