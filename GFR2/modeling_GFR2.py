@@ -1022,7 +1022,7 @@ class GFR2AttentionDecoderLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         original_hidden_states: torch.Tensor,
-        layer_idx: int,
+        layer_idx: Optional[int] = None,
         attention_mask: Optional[torch.Tensor] = None,
         causal_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[GFR2HybridDynamicCache] = None,
