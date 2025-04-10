@@ -1075,7 +1075,7 @@ class GFR2AttentionDecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
 
         hidden_states = self.pre_ff_layernorm(hidden_states)
-        hidden_states = self.feed_forward(hidden_states, self.layer_idx)
+        hidden_states = self.feed_forward(hidden_states)
 
         outputs = (hidden_states,)
 
@@ -1143,7 +1143,7 @@ class GFR2MambaDecoderLayer(nn.Module):
         # feed-forward (MLP)
         residual = hidden_states
         hidden_states = self.pre_ff_layernorm(hidden_states)
-        hidden_states = self.feed_forward(hidden_states, self.layer_idx)
+        hidden_states = self.feed_forward(hidden_states)
 
         hidden_states = residual + hidden_states
 
