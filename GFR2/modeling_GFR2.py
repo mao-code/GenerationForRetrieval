@@ -1262,8 +1262,7 @@ class GFR2Model(GFR2PreTrainedModel):
             self.layers.append(
                 nn.Linear(
                     2 * config.hidden_size, 
-                    config.hidden_size, bias=True,
-                    layer_idx=base_idx + 5
+                    config.hidden_size, bias=True
                 )
             )
 
@@ -1386,6 +1385,7 @@ class GFR2Model(GFR2PreTrainedModel):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
             if self.gradient_checkpointing and self.training:
+                # TODO: Support gradient checkpointing for all layers
                 layer_outputs = self._gradient_checkpointing_func(
                     self.layers[layer_index].__call__,
                     hidden_states,
