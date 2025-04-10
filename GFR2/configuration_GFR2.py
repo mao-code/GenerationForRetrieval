@@ -108,7 +108,7 @@ class GFR2Config(PretrainedConfig):
     def __init__(
         self,
         num_hidden_blocks=3,        # N GFR2Blocks,
-        num_layers_per_block=8,     # 8 layers per block
+        num_layers_per_block=8,     # 8 layers per block (do not modify)
         vocab_size=32000,
         max_position_embeddings=1024,
         hidden_size=1024,

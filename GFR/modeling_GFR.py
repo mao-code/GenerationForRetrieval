@@ -115,6 +115,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 # Copied from transformers.models.GFR.modeling_GFR with Zamba->GFR
+# TODO: Modify the Cache logic (refer to GFR2)
 class GFRHybridDynamicCache(DynamicCache):
     """
     A dynamic cache that can handle both the attention cache (which has a seq_len dimension) and the mamba cache
@@ -1371,6 +1372,7 @@ class GFRModel(GFRPreTrainedModel):
 
         return causal_mask
 
+# TODO: Modify the Cache logic (refer to GFR2), prepare_input_for_generation
 class GFRForCausalLM(GFRPreTrainedModel, GenerationMixin):
     """
     GFR model with a causal language modeling head.

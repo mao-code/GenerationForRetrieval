@@ -124,18 +124,24 @@ class GFR2HybridDynamicCache(DynamicCache):
         self._buffers = {}
         self.conv_states = {}
         self.ssm_states = {}
+
+        # num_hidden_layers = num_blocks * num_layers_per_block (8)
         for i in range(config.num_hidden_layers):
-            self.conv_states[i] = torch.zeros(
-                batch_size,
-                self.intermediate_size + 2 * config.mamba_ngroups * config.mamba_d_state,
-                self.conv_kernel_size,
-                device=device,
-                dtype=dtype,
-            )
-            self.ssm_states[i] = torch.zeros(
-                batch_size, self.n_mamba_heads, config.mamba_headdim, self.ssm_state_size, device=device, dtype=dtype
-            )
-            if self.layers_block_type[i] == "hybrid":
+            # Mamba layers are the 2~4 and 6~8 layers of each block
+            if (1 <= i % config.num_layers_per_block and i % config.num_layers_per_block <= 3) or (5 <= i % config.num_layers_per_block and i % config.num_layers_per_block <= 7):
+                self.conv_states[i] = torch.zeros(
+                    batch_size,
+                    self.intermediate_size + 2 * config.mamba_ngroups * config.mamba_d_state,
+                    self.conv_kernel_size,
+                    device=device,
+                    dtype=dtype,
+                )
+                self.ssm_states[i] = torch.zeros(
+                    batch_size, self.n_mamba_heads, config.mamba_headdim, self.ssm_state_size, device=device, dtype=dtype
+                )
+
+            # Transformer layers are the first and 5th layers of each block
+            if i % config.num_layers_per_block == 0 or i % config.num_layers_per_block == 4:
                 self.transformer_layers.append(i)
         self.key_cache = [torch.tensor([[]] * batch_size, device=device) for _ in range(config.num_hidden_layers)]
         self.value_cache = [torch.tensor([[]] * batch_size, device=device) for _ in range(config.num_hidden_layers)]
@@ -1771,6 +1777,29 @@ class GFR2ForCausalLM(GFR2PreTrainedModel, GenerationMixin):
         # Overwitten -- has a unique cache type, `GFR2HybridDynamicCache`
 
         empty_past_kv = past_key_values is None
+
+        # Ensure past_key_values is GFR2HybridDynamicCache
+        if past_key_values is not None and not isinstance(past_key_values, GFR2HybridDynamicCache):
+            if isinstance(past_key_values, DynamicCache):
+                new_cache = GFR2HybridDynamicCache(
+                    self.config, input_ids.shape[0], dtype=self.dtype, device=self.device
+                )
+                for layer_idx in range(len(past_key_values.key_cache)):
+                    new_cache.key_cache[layer_idx] = past_key_values.key_cache[layer_idx]
+                    new_cache.value_cache[layer_idx] = past_key_values.value_cache[layer_idx]
+                    # Copy conv_states and ssm_states if they exist in your DynamicCache (adjust as needed)
+                    if hasattr(past_key_values, 'conv_states'):
+                        new_cache.conv_states[layer_idx] = past_key_values.conv_states[layer_idx]
+                    else:
+                        print("Warning: conv_states not found in past_key_values.")
+                    if hasattr(past_key_values, 'ssm_states'):
+                        new_cache.ssm_states[layer_idx] = past_key_values.ssm_states[layer_idx]
+                    else:
+                        print("Warning: ssm_states not found in past_key_values.")
+                past_key_values = new_cache
+            else:
+                raise ValueError(f"past_key_values must be GFR2HybridDynamicCache, got {type(past_key_values)}")
+
 
         # Omit tokens covered by past_key_values
         if not empty_past_kv:
