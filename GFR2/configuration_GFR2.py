@@ -150,7 +150,7 @@ class GFR2Config(PretrainedConfig):
         v_head_dim=128,
         attention_bias=False,
         # Optionally, define rope_scaling if using RoPE.
-        rope_scaling={"rope_type": "default"},
+        rope_scaling=None,
         rope_interleave=True,
 
         **kwargs,
@@ -219,6 +219,7 @@ class GFR2Config(PretrainedConfig):
         self.qk_head_dim = qk_head_dim
         self.v_head_dim = v_head_dim
         self.rope_scaling = rope_scaling
+        self.rope_interleave = rope_interleave
         self.attention_bias = attention_bias
 
 __all__ = ["GFR2Config"]
