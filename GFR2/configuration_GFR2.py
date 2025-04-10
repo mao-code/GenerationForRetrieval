@@ -107,11 +107,11 @@ class GFR2Config(PretrainedConfig):
 
     def __init__(
         self,
+        num_hidden_blocks=3,        # N GFR2Blocks,
+        num_layers_per_block=9,     # 9 layers per block
         vocab_size=32000,
         max_position_embeddings=4096,
         hidden_size=2560,
-        num_hidden_layers=54,
-        layers_block_type=None,
         mamba_d_state=64,
         mamba_d_conv=4,
         mamba_expand=2,
@@ -162,6 +162,9 @@ class GFR2Config(PretrainedConfig):
             eos_token_id=eos_token_id,
             **kwargs,
         )
+        self.num_hidden_blocks = num_hidden_blocks
+        self.num_layers_per_block = num_layers_per_block
+
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size
@@ -170,7 +173,7 @@ class GFR2Config(PretrainedConfig):
         else:
             self.intermediate_size = intermediate_size
         self.hidden_act = hidden_act
-        self.num_hidden_layers = num_hidden_layers
+        self.num_hidden_layers = num_hidden_blocks * num_layers_per_block
         self.num_attention_heads = num_attention_heads
         self.num_mem_blocks = num_mem_blocks
         self.attention_hidden_size = 2 * hidden_size
@@ -205,24 +208,11 @@ class GFR2Config(PretrainedConfig):
         self.num_attention_heads = num_attention_heads
         self.kv_channels = self.hidden_size // self.num_attention_heads
         self.num_query_groups = self.num_attention_heads
-        # Below, "mamba" stands for mamba layer, "hybrid" stands for hybrid layer (composed by a shared transformer followed by mamba layer)
-        if layers_block_type is None:
-            self.layers_block_type = (
-                ["mamba"]
-                + (["mamba"] * 5 + ["hybrid"]) * 7
-                + ["mamba"] * 4
-                + ["hybrid"]
-                + ["mamba"] * 3
-                + ["hybrid"]
-                + ["mamba"] * 2
-            )
-        else:
-            self.layers_block_type = layers_block_type
+
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.num_logits_to_keep = num_logits_to_keep
-        self.hybrid_layer_ids = [index for index, type in enumerate(self.layers_block_type) if type == "hybrid"]
         self.use_mem_eff_path = use_mem_eff_path
 
         # MLA configuration fields:

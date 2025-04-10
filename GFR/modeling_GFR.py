@@ -1579,12 +1579,6 @@ class GFRModelWithTokenTypes(GFRModel):
         )
 
 class GFRForSequenceScoring(GFRPreTrainedModel):
-    """
-    GFR model for sequence scoring.
-    
-    This model wraps the GFRModel backbone and adds a score head that uses
-    the [CLS] token (first token) hidden state for scoring.
-    """
     def __init__(self, config: "GFRConfig"):
         super().__init__(config)
         self.config = config

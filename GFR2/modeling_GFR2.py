@@ -588,28 +588,31 @@ def yarn_get_mscale(scale=1, mscale=1):
 class GFR2MultiHeadLatentAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: GFR2Config, layer_idx: int):
+    def __init__(self, config: GFR2Config, layer_idx: int, concat_input: Optional[bool] = False):
         super().__init__()
         self.config = config
+        self.dim_scale = (2 if concat_input else 1)
+        self.attn_hidden_size = config.hidden_size * self.dim_scale
+
         self.layer_idx = layer_idx
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.attention_dropout = config.attention_dropout
         self.num_heads = config.num_attention_heads
         self.rope_theta = config.rope_theta
-        self.q_lora_rank = config.q_lora_rank
-        self.qk_rope_head_dim = config.qk_rope_head_dim
-        self.kv_lora_rank = config.kv_lora_rank
-        self.v_head_dim = config.v_head_dim
-        self.qk_nope_head_dim = config.qk_nope_head_dim
-        self.qk_head_dim = config.qk_head_dim
+        self.q_lora_rank = self.dim_scale * config.q_lora_rank
+        self.qk_rope_head_dim = self.dim_scale * config.qk_rope_head_dim
+        self.kv_lora_rank = self.dim_scale * config.kv_lora_rank
+        self.v_head_dim = self.dim_scale * config.v_head_dim
+        self.qk_nope_head_dim = self.dim_scale * config.qk_nope_head_dim
+        self.qk_head_dim = self.dim_scale * config.qk_head_dim
 
         self.is_causal = True
-        self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=config.attention_bias)
+        self.q_a_proj = nn.Linear(self.attn_hidden_size, config.q_lora_rank, bias=config.attention_bias)
         self.q_a_layernorm = GFR2RMSNorm(config.q_lora_rank)
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.qk_head_dim, bias=False)
 
         self.kv_a_proj_with_mqa = nn.Linear(
-            config.hidden_size,
+            self.attn_hidden_size,
             self.kv_lora_rank + self.qk_rope_head_dim,
             bias=config.attention_bias,
         )
@@ -622,11 +625,13 @@ class GFR2MultiHeadLatentAttention(nn.Module):
 
         self.o_proj = nn.Linear(
             self.num_heads * self.v_head_dim,
-            config.hidden_size,
+            self.attn_hidden_size,
             bias=config.attention_bias,
         )
 
-        self.scaling = self.qk_head_dim ** (-0.5)
+        # self.scaling = self.qk_head_dim ** (-0.5)
+        self.scaling = (self.qk_head_dim / self.dim_scale) ** -0.5
+
         if self.config.rope_scaling is not None:
             mscale_all_dim = self.config.rope_scaling.get("mscale_all_dim", 0)
             scaling_factor = self.config.rope_scaling["factor"]
@@ -1191,14 +1196,14 @@ class GFR2MambaMixer(nn.Module):
         return self.torch_forward(hidden_states, cache_params, attention_mask)
 
 class GFR2MLP(nn.Module):
-    def __init__(self, config: GFR2Config, num_fwd_mem_blocks=None, block_id: Optional[int] = None):
+    def __init__(self, config: GFR2Config, num_fwd_mem_blocks=None, block_id: Optional[int] = None, concat_input: Optional[bool] = False):
         """
         This MLP layer contributes to tied transformer blocks aimed to increasing compute without increasing model size. Because this layer
         is tied, un-tied adapter modules (formally same as LoRA, but used in the base model) are added to the up and gate projectors to increase expressivity with a small memory overhead.
         """
         super().__init__()
         self.config = config
-        self.hidden_size = config.hidden_size
+        self.hidden_size = config.hidden_size * (2 if concat_input else 1)
         self.intermediate_size = config.intermediate_size
         self.num_fwd_mem_blocks = num_fwd_mem_blocks
         self.block_id = block_id
@@ -1236,15 +1241,16 @@ class GFR2AttentionDecoderLayer(nn.Module):
         super().__init__()
 
         self.block_id = block_id
+        self.layer_idx = layer_idx
         num_gs = len(config.hybrid_layer_ids)
         attn_hidden_size = config.hidden_size * (2 if concat_input else 1)
 
         self.input_layernorm = GFR2RMSNorm(attn_hidden_size, eps=config.rms_norm_eps)
         # self.self_attn = GFR2Attention(config, layer_idx=-1, num_fwd_mem_blocks=num_gs, block_id=block_id)
-        self.self_attn = GFR2MultiHeadLatentAttention(config, layer_idx=-1)
+        self.self_attn = GFR2MultiHeadLatentAttention(config, layer_idx=-1, concat_input=concat_input)
 
         self.pre_ff_layernorm = GFR2RMSNorm(attn_hidden_size, eps=config.rms_norm_eps)
-        self.feed_forward = GFR2MLP(config, num_fwd_mem_blocks=num_gs, block_id=block_id)
+        self.feed_forward = GFR2MLP(config, num_fwd_mem_blocks=num_gs, block_id=block_id, concat_input=concat_input)
 
         self.concat_input = concat_input
 
@@ -1283,6 +1289,8 @@ class GFR2AttentionDecoderLayer(nn.Module):
                 with `head_dim` being the embedding dimension of each attention head.
         """
         if self.concat_input and original_hidden_states is not None:
+            # Concatenate the original hidden states with the current hidden states along the last dimension
+            # Therefore, the shape of `hidden_states` will be (batch_size, seq_len, 2 * hidden_size)
             hidden_states = torch.concatenate([hidden_states, original_hidden_states], dim=-1)
 
         residual = hidden_states
@@ -1290,7 +1298,7 @@ class GFR2AttentionDecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
-            layer_idx=layer_idx,
+            layer_idx=self.layer_idx,
             attention_mask=causal_mask,
             past_key_value=past_key_value,
             output_attentions=output_attentions,
@@ -1303,7 +1311,7 @@ class GFR2AttentionDecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
 
         hidden_states = self.pre_ff_layernorm(hidden_states)
-        hidden_states = self.feed_forward(hidden_states, layer_idx)
+        hidden_states = self.feed_forward(hidden_states, self.layer_idx)
 
         outputs = (hidden_states,)
 
@@ -1371,7 +1379,7 @@ class GFR2MambaDecoderLayer(nn.Module):
         # feed-forward (MLP)
         residual = hidden_states
         hidden_states = self.pre_ff_layernorm(hidden_states)
-        hidden_states = self.feed_forward(hidden_states)
+        hidden_states = self.feed_forward(hidden_states, self.layer_idx)
 
         hidden_states = residual + hidden_states
 
@@ -1438,30 +1446,93 @@ class GFR2Model(GFR2PreTrainedModel):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        blocks = [GFR2AttentionDecoderLayer(config, block_id=k) for k in range(config.num_mem_blocks)]
-        mamba_layers = []
-        linear_layers = []
-        self.layers_block_type = config.layers_block_type
-        for i in range(config.num_hidden_layers):
-            if config.layers_block_type[i] == "mamba":
-                mamba_layers.append(GFR2MambaDecoderLayer(config, layer_idx=i))
-            elif config.layers_block_type[i] == "hybrid":
-                linear_layers.append(nn.Linear(self.config.hidden_size, self.config.hidden_size, bias=False))
-                mamba_layers.append(GFR2MambaDecoderLayer(config, layer_idx=i))
-        mamba_layers = iter(mamba_layers)
-        linear_layers = iter(linear_layers)
-        blocks = cycle(blocks)
-        layers = self.get_layers(blocks, linear_layers, mamba_layers)
-        self.layers = nn.ModuleList(layers)
+        self._tied_weights_keys = ["embed_tokens.weight"]
 
-        self._attn_implementation = config._attn_implementation
+        self.num_hidden_blocks = getattr(config, "num_hidden_blocks", 1)
+        self.num_layers_per_block = getattr(config, "num_layers_per_block", 9)
+        self.num_hidden_layers = config.num_hidden_layers  # total number of sub-layers
+
+        self.layers = nn.ModuleList()
+        for block_idx in range(self.num_hidden_blocks):
+            base_idx = block_idx * self.num_layers_per_block
+            # 1) Transformer T1.
+            self.layers.append(
+                GFR2AttentionDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 0,
+                    concat_input=False
+                )
+            )
+
+            # 2) Mamba 1.
+            self.layers.append(
+                GFR2MambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 1
+                )
+            )
+            # 3) Mamba 2.
+            self.layers.append(
+                GFR2MambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 2
+                )
+            )
+            # 4) Mamba 3.
+            self.layers.append(
+                GFR2MambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 3
+                )
+            )
+
+            # 5) Transformer T2 (always with concat_input=True).
+            self.layers.append(
+                GFR2AttentionDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 4,
+                    concat_input=True
+                )
+            )
+            # 6) Linear projection to convert 2*hidden_size back to hidden_size.
+            self.layers.append(
+                nn.Linear(2 * config.hidden_size, config.hidden_size, bias=True)
+            )
+
+            # 7) Mamba 4.
+            self.layers.append(
+                GFR2MambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 5
+                )
+            )
+            # 8) Mamba 5.
+            self.layers.append(
+                GFR2MambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 6
+                )
+            )
+            # 9) Mamba 6.
+            self.layers.append(
+                GFR2MambaDecoderLayer(
+                    config,
+                    layer_idx=base_idx + 7
+                )
+            )
+
+        # Final normalization layer.
         self.final_layernorm = GFR2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.score_head = nn.Linear(config.hidden_size, 1)
+
+        self._attn_implementation = config._attn_implementation        
         if config.use_mem_rope:
             if config.use_long_context:
                 logger.warning_once(
                     "`use_long_context` set to `True`: using rescaled `rope_theta` and extended `max_position_embeddings`."
                 )
             self.rotary_emb = GFR2RotaryEmbedding(config)
+
         self.gradient_checkpointing = False
 
         # Initialize weights and apply final processing
@@ -1485,6 +1556,7 @@ class GFR2Model(GFR2PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        **kwargs
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -1511,7 +1583,6 @@ class GFR2Model(GFR2PreTrainedModel):
         hidden_states = inputs_embeds
 
         original_hidden_states = torch.clone(inputs_embeds)
-        # original_hidden_states: word embedding output that will be concatenated with hidden activations to form the input of the shared transformer layer
 
         if use_cache and past_key_values is None:
             batch_size = input_ids.shape[0] if input_ids is not None else inputs_embeds.shape[0]
@@ -1540,43 +1611,192 @@ class GFR2Model(GFR2PreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
 
-        for layer_idx, layer in enumerate(self.layers):
+        layer_index = 0
+        # Process each block (each block consists of 9 sub-layers as built above).
+        for block_idx in range(self.num_hidden_blocks):
+            # ----- 1) Transformer T1 -----
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
-                    layer.__call__,
+                    self.layers[layer_index].__call__,
                     hidden_states,
                     original_hidden_states,
-                    layer_idx,
                     attention_mask,
                     causal_mask,
                     past_key_values,
                     output_attentions,
                     use_cache,
-                    position_embeddings,
+                    cache_position
                 )
             else:
-                layer_outputs = layer(
+                layer_outputs = self.layers[layer_index](
                     hidden_states,
                     original_hidden_states=original_hidden_states,
-                    layer_idx=layer_idx,
                     attention_mask=attention_mask,
                     causal_mask=causal_mask,
                     past_key_value=past_key_values,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
-                    position_embeddings=position_embeddings,
+                    cache_position=cache_position,
+                    **kwargs,
                 )
+            T1_out = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+            hidden_states = T1_out
+
+            # ----- 2) Mamba 1 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
             hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
 
-            if output_attentions:
-                if layer_outputs[1] is not None:
-                    # append attentions only of attention layers. Mamba layers return `None` as the attention weights
-                    all_self_attns += (layer_outputs[1],)
+            # ----- 3) Mamba 2 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
 
+            # ----- 4) Mamba 3 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+
+            # Save output of Mamba 3 for skip connection.
+            mamba3_output = hidden_states
+
+            # ----- 5) Transformer T2 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,  # T2 always concatenates with original_hidden_states
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+
+            # ----- 6) Linear projection after T2 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](hidden_states)
+            hidden_states = layer_outputs
+            layer_index += 1
+
+            # Add skip connection from Mamba 3.
+            hidden_states = hidden_states + mamba3_output
+
+            # ----- 7) Mamba 4 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+
+            # ----- 8) Mamba 5 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+
+            # ----- 9) Mamba 6 -----
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+            layer_outputs = self.layers[layer_index](
+                hidden_states,
+                original_hidden_states=original_hidden_states,
+                attention_mask=attention_mask,
+                causal_mask=causal_mask,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs,
+            )
+            hidden_states = layer_outputs[0]
+            if output_attentions and layer_outputs[1] is not None:
+                all_attentions += (layer_outputs[1],)
+            layer_index += 1
+
+        # Final normalization.
         hidden_states = self.final_layernorm(hidden_states)
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
@@ -1628,53 +1848,53 @@ class GFR2Model(GFR2PreTrainedModel):
 
         return causal_mask
 
-    def get_layers(self, blocks, linear_layers, mamba_layers):
-        layers = []
-        self._tied_weights_keys = []
-        self.first_transformer_layer_id = 0
-        for layer_id, layer_type in enumerate(self.layers_block_type):
-            if layer_type == "hybrid":
-                if self.first_transformer_layer_id == 0:
-                    self.first_transformer_layer_id = layer_id
-                block = next(blocks)
-                if self.config.num_mem_blocks * len(self.config.hybrid_layer_ids) > 1:
-                    prefix_pattern = rf"^layers\.{layer_id}\.shared_transformer\."
-                    main_keys_pattern = re.compile(
-                        prefix_pattern
-                        + r"(?:"
-                        + r"self_attn\.(?:q_proj|k_proj|v_proj|o_proj)\.weight|"
-                        + r"feed_forward\.(?:gate_up_proj|down_proj)\.weight|"
-                        + r"(?:input_layernorm|pre_ff_layernorm)\.weight"
-                        + r")$"
-                    )
-                    self._tied_weights_keys.append(main_keys_pattern)
+class GFRModelWithTokenTypes(GFR2Model):
+    def __init__(self, config):
+        super().__init__(config)
+        # Add token type embeddings with a small vocabulary (e.g., 2 types: 0 for document, 1 for query)
+        self.token_type_embeddings = nn.Embedding(2, config.hidden_size)
+        # Initialize the token type embeddings to zeros so that they don't disturb the pre-trained weights initially.
+        nn.init.zeros_(self.token_type_embeddings.weight)
 
-                    adapter_id = 0
-                    for _layer_type in self.layers_block_type:
-                        if _layer_type == "hybrid" and adapter_id % self.config.num_mem_blocks == block.block_id:
-                            adapter_pattern = re.compile(
-                                r"^shared_transformer\.feed_forward\.gate_up_proj_adapter_list\."
-                                + str(adapter_id)
-                                + r"\.(?:0|1)\.weight$"
-                            )
-                            self._tied_weights_keys.append(adapter_pattern)
-                        adapter_id += 1
-                    if self.config.use_shared_attention_adapter:
-                        adapter_id = 0
-                        for _layer_type in self.layers_block_type:
-                            if _layer_type == "hybrid" and adapter_id % self.config.num_mem_blocks == block.block_id:
-                                attn_adapter_pattern = re.compile(
-                                    r"^shared_transformer\.self_attn\."
-                                    + r"(?:linear_q_adapter_list|linear_k_adapter_list|linear_v_adapter_list)\."
-                                    + str(adapter_id)
-                                    + r"\.(?:0|1)\.weight$"
-                                )
-                                self._tied_weights_keys.append(attn_adapter_pattern)
-                            adapter_id += 1
-                layers.append(GFR2HybridLayer(block, next(linear_layers), next(mamba_layers)))
-            else:
-                layers.append(next(mamba_layers))
-        return layers
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        token_type_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional["GFR2HybridDynamicCache"] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ) -> Union[Tuple, "BaseModelOutputWithPast"]:
+        # If inputs_embeds is not provided, compute them from input_ids.
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)  # (batch, seq_len, hidden_size)
+
+        if token_type_ids is not None:
+            token_type_embeds = self.token_type_embeddings(token_type_ids)
+            inputs_embeds = inputs_embeds + token_type_embeds
+
+        # Call the parent forward method with the modified embeddings.
+        # We pass token_type_ids as None because we already added them.
+        return super().forward(
+            input_ids=None,
+            token_type_ids=None,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            cache_position=cache_position,
+            **kwargs,
+        )
 
 
 # Adapted from transformers.models.jamba.modeling_jamba.JambaForCausalLM with Jamba->GFR2, JAMBA->GFR2
@@ -1724,38 +1944,6 @@ class GFR2ForCausalLM(GFR2PreTrainedModel, GenerationMixin):
         logits_to_keep: Union[int, torch.Tensor] = 0,
         **loss_kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        r"""
-            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-
-            logits_to_keep (`int` or `torch.Tensor`, *optional*):
-                If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
-                `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
-                token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
-                If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
-                This is useful when using packed tensor format (single dimension for batch and sequence length).
-
-        Returns:
-
-        Example:
-
-        ```python
-        >>> from transformers import AutoTokenizer, GFR2ForCausalLM
-
-        >>> model = GFR2ForCausalLM.from_pretrained("Zyphra/GFR2-7B-v1")
-        >>> tokenizer = AutoTokenizer.from_pretrained("Zyphra/GFR2-7B-v1")
-
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-        ```"""
-
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
 
         output_hidden_states = (
@@ -1967,5 +2155,186 @@ class GFR2ForSequenceClassification(GFR2PreTrainedModel):
             attentions=transformer_outputs.attentions,
         )
 
+class GFRForSequenceScoring(GFR2PreTrainedModel):
+    def __init__(self, config):
+        super().__init__(config)
+        self.config = config
+        self.gfr2 = GFRModelWithTokenTypes(config)
 
-__all__ = ["GFR2ForCausalLM", "GFR2ForSequenceClassification", "GFR2Model", "GFR2PreTrainedModel"]
+        self.token_type_embedding = nn.Embedding(2, config.hidden_size)
+        self.score_head = nn.Linear(config.hidden_size, 1, bias=False)
+
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.gfr.get_input_embeddings()
+    
+    def set_input_embeddings(self, value):
+        return self.gfr.set_input_embeddings(value)
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        token_type_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional["GFR2HybridDynamicCache"] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        logits_to_keep: Union[int, torch.Tensor] = 0,
+        **kwargs,
+    ) -> Union[Tuple, BaseModelOutputWithPast]:
+        outputs = self.gfr2(
+            input_ids=input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=True,
+            return_dict=True,
+            cache_position=cache_position,
+            **kwargs,
+        )
+        hidden_states = outputs.last_hidden_state  # (batch, seq_len, hidden_size)
+
+        # If pad to the left, the position of [SCORE] is at the last position of the sequence
+        score_positions = hidden_states.size(1) - 1
+
+        # Extract the hidden state of [SCORE] for each sequence in the batch
+        batch_indices = torch.arange(hidden_states.size(0))  # [0, 1, 2, ..., batch_size-1]
+        score_hidden = hidden_states[batch_indices, score_positions]  # Shape: (batch_size, hidden_size)
+
+        # Pass the [SCORE] hidden state through a scoring head
+        logits = self.score_head(score_hidden).squeeze(-1)  # Shape: (batch_size,)
+
+        loss = None
+        if labels is not None:
+            loss_fct = nn.BCEWithLogitsLoss()
+            loss = loss_fct(logits, labels.float())
+
+        if not return_dict:
+            return (loss, logits)
+        else:
+            return {
+                "loss": loss,
+                "logits": logits,
+                "hidden_states": outputs.hidden_states,
+                "attentions": outputs.attentions,
+                "past_key_values": outputs.past_key_values
+            }
+        
+    def prepare_input(self, documents: list, queries: list, tokenizer, max_length: int = 1024):
+        """
+        Prepares batched inputs for the model by truncating document tokens if needed and dynamically
+        padding to the longest sequence in the batch rather than a fixed max_length.
+        """
+        input_ids_list = []
+        token_type_ids_list = []
+        
+        # First, build tokenized sequences without padding.
+        for document, query in zip(documents, queries):
+            # Encode document and query without adding special tokens.
+            doc_ids = tokenizer.encode(document, add_special_tokens=False)
+            query_ids = tokenizer.encode(query, add_special_tokens=False)
+            score_id = tokenizer.convert_tokens_to_ids("[SCORE]")
+            
+            # Calculate available tokens for the document.
+            # Reserve tokens for [SEP] and [SCORE] plus the query tokens.
+            reserved_tokens = 2 + len(query_ids)
+            available_doc_length = max_length - reserved_tokens
+            
+            if available_doc_length < 0:
+                raise ValueError("max_length is too small to accommodate the query and required special tokens.")
+            
+            # Truncate document tokens if necessary.
+            truncated_doc_ids = doc_ids[:available_doc_length]
+            
+            # Build the final input sequence: truncated_doc_ids + [SEP] + query_ids + [SCORE].
+            input_ids = truncated_doc_ids + [tokenizer.sep_token_id] + query_ids + [score_id]
+            input_ids_list.append(input_ids)
+            
+            # Create token type IDs:
+            # Token type 0 for document tokens and [SEP], and token type 1 for query tokens and [SCORE].
+            token_type_ids = [0] * (len(truncated_doc_ids) + 1) + [1] * (len(query_ids) + 1)
+            token_type_ids_list.append(token_type_ids)
+        
+        # Determine the maximum sequence length in the batch.
+        batch_max_length = max(len(seq) for seq in input_ids_list)
+        
+        # Pad sequences to the batch maximum length.
+        padded_input_ids_list = [
+            [tokenizer.pad_token_id] * (batch_max_length - len(seq)) + seq
+            for seq in input_ids_list
+        ]
+        padded_token_type_ids_list = [
+            [0] * (batch_max_length - len(seq)) + seq
+            for seq in token_type_ids_list
+        ]
+        attention_masks_list = [
+            [0] * (batch_max_length - len(seq)) + [1] * len(seq)
+            for seq in input_ids_list
+        ]
+        
+        # Convert lists to tensors.
+        input_ids_tensor = torch.tensor(padded_input_ids_list, dtype=torch.long)
+        token_type_ids_tensor = torch.tensor(padded_token_type_ids_list, dtype=torch.long)
+        attention_mask_tensor = torch.tensor(attention_masks_list, dtype=torch.long)
+        
+        return input_ids_tensor, token_type_ids_tensor, attention_mask_tensor
+    
+    def prepare_documents_input(self, documents: list, tokenizer):
+        """
+        Prepares batched document inputs.
+        Each document is tokenized (with a trailing [SEP]) and then dynamically padded
+        to the maximum document length within the batch.
+        """
+
+        # Append [SEP] to each document
+        doc_sequences = [doc + " [SEP]" for doc in documents]
+        inputs = tokenizer(
+            doc_sequences,
+            padding="longest",
+            truncation=True,
+            return_tensors="pt"
+        ) # shape: (batch_size, doc_max_len)
+        
+        input_ids = inputs["input_ids"]
+        token_type_ids = torch.zeros_like(input_ids)  # All 0 for doc_ids and [SEP]
+        attention_mask = inputs["attention_mask"]
+
+        return input_ids, token_type_ids, attention_mask
+
+    # TODO: Should not pad on the query part because we pad to the left and need to get [SCORE] for the last token
+    # TODO: Need to design a mechanism for caching usage
+    def prepare_query_input(self, queries: list, tokenizer):
+        """
+        Prepares batched query inputs.
+        """
+        raise NotImplementedError("This method is not implemented yet.")
+    
+        # Append [SCORE] to each query
+        query_sequences = [query + " [SCORE]" for query in queries]
+        inputs = tokenizer(
+            query_sequences,
+            padding=False,
+            truncation=False,
+            # padding="longest",
+            # truncation=True,
+            return_tensors="pt"
+        ) # shape: (batch_size, query_max_len)
+        
+        input_ids = inputs["input_ids"]
+        token_type_ids = torch.ones_like(input_ids)  # All 1 for query_ids and [SCORE]
+        attention_mask = inputs["attention_mask"]
+        
+        return input_ids, token_type_ids, attention_mask
+
+__all__ = ["GFR2ForCausalLM", "GFR2ForSequenceClassification", "GFR2Model", "GFR2ModelWithTokenTypes", "GFR2PreTrainedModel"]
