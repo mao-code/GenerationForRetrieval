@@ -1113,8 +1113,7 @@ class GFR2MambaDecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
-        transformer_hidden_states: Optional[torch.Tensor] = None,
-        **kwargs,
+        **kwargs
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -1424,7 +1423,15 @@ class GFR2Model(GFR2PreTrainedModel):
                         # Attention and Mamba layers return tuples
                         layer_outputs = self._gradient_checkpointing_func(
                             self.layers[base_idx + i].__call__,
-                            **layer_args
+                            hidden_states,
+                            original_hidden_states,
+                            attention_mask,
+                            causal_mask,
+                            past_key_values,
+                            output_attentions,
+                            position_embeddings,
+                            use_cache,
+                            cache_position
                         )
                         hidden_states = layer_outputs[0]
                         if output_attentions and len(layer_outputs) > 1 and layer_outputs[1] is not None:
