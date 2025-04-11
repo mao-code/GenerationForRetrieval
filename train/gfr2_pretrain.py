@@ -185,6 +185,7 @@ def main():
     logger.info(f"Number of parameters: {num_params}. Around {num_params / 1e6:.2f}M parameters.")
 
     # ========= Load and Preprocess the FineWeb-Edu Dataset ========= #
+    # Fineweb-Edu dataset shows its high quality and effectiveness
     logger.info("Loading FineWeb-Edu dataset...")
 
     # Copied from https://huggingface.co/learn/nlp-course/chapter7/6?fw=pt
@@ -215,10 +216,9 @@ def main():
         
         return {"input_ids": input_ids, "attention_mask": attention_masks}
     
+    logger.info("Loading Evaluation Dataset...")
     eval_size = args.eval_size
-    raw_eval_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True, ignore_verifications=True)
-
-    logger.info("Splitting FineWeb-Edu dataset...")
+    raw_eval_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
     eval_examples = list(islice(raw_eval_stream, eval_size))
     logger.info(f"Loaded {len(eval_examples)} evaluation examples.")
 
@@ -229,7 +229,7 @@ def main():
     validation_dataset = val_test_splits["train"]
     test_dataset = val_test_splits["test"]
 
-    # Fineweb-Edu dataset shows its high quality and effectiveness
+    logger.info("Loading Training Dataset...")
     raw_train_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
     raw_train_stream = raw_train_stream.skip(eval_size)
 
