@@ -1220,7 +1220,7 @@ class GFR2Model(GFR2PreTrainedModel):
         self._tied_weights_keys = ["embed_tokens.weight"]
 
         self.num_hidden_blocks = getattr(config, "num_hidden_blocks", 1)
-        self.num_layers_per_block = getattr(config, "num_layers_per_block", 9)
+        self.num_layers_per_block = getattr(config, "num_layers_per_block", 8)
         self.num_hidden_layers = config.num_hidden_layers  # total number of sub-layers
 
         self.layers = nn.ModuleList()
@@ -1389,57 +1389,52 @@ class GFR2Model(GFR2PreTrainedModel):
         layer_index = 0
         for block_idx in range(self.num_hidden_blocks):
             base_idx = block_idx * 9  # 9 layers per block (including the linear porjection layer)
+            mamba3_output = None  # will be assigned in layer index 3
+
             for i in range(9):
                 if output_hidden_states:
                     all_hidden_states += (hidden_states,)
 
                 if i == 0: # Save the input of the block for skip connection
                     input_residual = hidden_states
-
                 if i == 1: # Before the first Mamba layer, add skip connection
                     hidden_states = hidden_states + input_residual
 
-                # Common arguments for all layers
-                layer_args = {
-                    "hidden_states": hidden_states,
-                    "original_hidden_states": original_hidden_states,
-                    "attention_mask": attention_mask,
-                    "causal_mask": causal_mask,
-                    "past_key_value": past_key_values,
-                    "output_attentions": output_attentions,
-                    "position_embeddings": position_embeddings,
-                    "use_cache": use_cache,
-                    "cache_position": cache_position,
-                    **kwargs
-                }
-
                 if self.gradient_checkpointing and self.training:
-                    if i == 5:  # Linear projection layer
-                        # nn.Linear only takes hidden_states and returns a single tensor
-                        hidden_states = self._gradient_checkpointing_func(
-                            self.layers[base_idx + i].__call__,
-                            hidden_states
-                        )
-                    else:
-                        # Attention and Mamba layers return tuples
-                        layer_outputs = self._gradient_checkpointing_func(
-                            self.layers[base_idx + i].__call__,
-                            hidden_states,
-                            original_hidden_states,
-                            attention_mask,
-                            causal_mask,
-                            past_key_values,
-                            output_attentions,
-                            position_embeddings,
-                            use_cache,
-                            cache_position
-                        )
-                        hidden_states = layer_outputs[0]
-                        if output_attentions and len(layer_outputs) > 1 and layer_outputs[1] is not None:
-                            all_self_attns += (layer_outputs[1],)
+                    def custom_forward(hidden_states, mamba3_input=None):
+                        # For i == 5, use mamba3_input; otherwise, ignore it
+                        if i == 5:
+                            projected = self.layers[base_idx + 5](hidden_states)
+                            return (projected + mamba3_input,)
+                        else:
+                            return self.layers[base_idx + i](
+                                hidden_states=hidden_states,
+                                original_hidden_states=original_hidden_states,
+                                attention_mask=attention_mask,
+                                causal_mask=causal_mask,
+                                past_key_value=past_key_values,
+                                output_attentions=output_attentions,
+                                position_embeddings=position_embeddings,
+                                use_cache=use_cache,
+                                cache_position=cache_position,
+                                **kwargs
+                            )
+
+                    # Pass mamba3_output only for i == 5
+                    inputs = (
+                        (hidden_states, mamba3_output) if i == 5 else (hidden_states,)
+                    )
+                    layer_outputs = self._gradient_checkpointing_func(
+                        custom_forward,
+                        *inputs
+                    )
+                    hidden_states = layer_outputs[0]
+                    if output_attentions and len(layer_outputs) > 1 and layer_outputs[1] is not None:
+                        all_self_attns += (layer_outputs[1],)
                 else:
                     if i == 5:  # Linear projection layer
-                        hidden_states = self.layers[base_idx + i](hidden_states)
+                        projection = self.layers[base_idx + 5](hidden_states)
+                        hidden_states = projection + mamba3_output
                     else:
                         layer_outputs = self.layers[base_idx + i](
                             hidden_states=hidden_states,
@@ -1458,10 +1453,8 @@ class GFR2Model(GFR2PreTrainedModel):
                             all_self_attns += (layer_outputs[1],)
 
                 # Special handling after specific layers
-                if i == 3:  # After Mamba 3, save for skip connection
-                    mamba3_output = hidden_states
-                elif i == 5:  # After Linear projection, add skip connection
-                    hidden_states = hidden_states + mamba3_output
+                if i == 3:
+                    mamba3_output = hidden_states.clone()
 
                 layer_index += 1
 
