@@ -312,7 +312,7 @@ if __name__ == "__main__":
     deepspeed --module train.gfr2_pretrain \
         --deepspeed_config deepspeed_pretrain_config.json \
         --batch_size 16 \
-        --grad_accumulation_steps 8 \
+        --grad_accumulation_steps 4 \
         --target_tokens 10000000000 \
         --num_train_epochs 1 \
         --per_device_eval_batch_size 4 \
