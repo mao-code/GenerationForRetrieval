@@ -24,6 +24,19 @@ from GFR2.tokenizer_utils import get_tokenizer
 from utils import MainProcessFilter, is_main_process
 from train.utils import log_training_config
 
+# ========= Set up logging. ========= #
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        # logging.FileHandler(args.log_file, mode="w")
+    ],
+    force=True
+)
+logger = logging.getLogger()
+
 class CustomTrainer(Trainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -133,6 +146,7 @@ def main():
     parser.add_argument("--run_name", type=str, default="", help="Run name for logging")
 
     args = parser.parse_args()
+    logger.addFilter(MainProcessFilter(args.local_rank))
 
     """
     For wandb logging, set the following environment variables:
@@ -141,20 +155,6 @@ def main():
     export WANDB_PROJECT="gfr2_pretrain"
     export WANDB_ENTITY="nlp-maocode"
     """
-
-    # ========= Set up logging. ========= #
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.StreamHandler(),
-            # logging.FileHandler(args.log_file, mode="w")
-        ],
-        force=True
-    )
-    logger = logging.getLogger()
-    logger.addFilter(MainProcessFilter(args.local_rank))
 
     # ========= Hyperparameters and Settings ========= #
     learning_rate = 1e-4
@@ -216,7 +216,7 @@ def main():
         return {"input_ids": input_ids, "attention_mask": attention_masks}
     
     eval_size = args.eval_size
-    raw_eval_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
+    raw_eval_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True, ignore_verifications=True)
 
     logger.info("Splitting FineWeb-Edu dataset...")
     eval_examples = list(islice(raw_eval_stream, eval_size))
