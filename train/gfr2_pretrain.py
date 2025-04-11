@@ -177,6 +177,7 @@ def main():
     config = GFR2Config(
         vocab_size=len(tokenizer), 
         num_hidden_blocks=args.num_blocks,  
+        max_position_embeddings=args.max_seq_length,
     )
     model = GFR2ForCausalLM(config)
     model.resize_token_embeddings(len(tokenizer))
