@@ -105,9 +105,6 @@ class QualitativeGenerationCallback(TrainerCallback):
         # Decode the outputs to human-readable text.
         decoded_outputs = [self.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
 
-        # Log the qualitative outputs to wandb along with the current training step.
-        wandb.log({"qualitative_outputs": decoded_outputs}, step=state.global_step)
-
         # Also print the outputs for immediate feedback.
         logging.info("Qualitative Generation Outputs:")
         for prompt, generated in zip(self.prompts, decoded_outputs):

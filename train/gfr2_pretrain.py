@@ -112,9 +112,6 @@ class QualitativeGenerationCallback(TrainerCallback):
         # Decode the outputs to human-readable text.
         decoded_outputs = [self.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
 
-        # Log the qualitative outputs to wandb along with the current training step.
-        wandb.log({"qualitative_outputs": decoded_outputs}, step=state.global_step)
-
         # Also print the outputs for immediate feedback.
         logger.info("Qualitative Generation Outputs:")
         for prompt, generated in zip(self.prompts, decoded_outputs):
@@ -316,11 +313,11 @@ if __name__ == "__main__":
         --grad_accumulation_steps 8 \
         --target_tokens 10000000000 \
         --num_train_epochs 1 \
-        --per_device_eval_batch_size 4 \
+        --per_device_eval_batch_size 1 \
         --eval_size 256 \
         --max_seq_length 1024 \
-        --num_blocks 3 \
-        --output_dir ./gfr2_pretrain_finewebedu_3blocks \
-        --save_model_path gfr2_pretrain_causal_lm_final_finewebedu_v2_3blocks \
-        --run_name "gfr2_fineweb10B_model_3blocks"
+        --num_blocks 4 \
+        --output_dir ./gfr2_pretrain_finewebedu_4blocks \
+        --save_model_path gfr2_pretrain_causal_lm_final_finewebedu_v2_4blocks \
+        --run_name "gfr2_fineweb10B_model_4blocks"
     """
