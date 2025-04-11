@@ -19,7 +19,9 @@ from transformers import (
 from datasets import load_dataset, Dataset
 from sklearn.model_selection import train_test_split
 
-from GFR.modeling_GFR import GFRForCausalLM, GFRConfig
+from GFR.modeling_GFR import GFRForCausalLM 
+from GFR.configuration_GFR import GFRConfig
+from GFR.tokenizer_utils import get_tokenizer
 
 # Setup logging
 logging.basicConfig(
@@ -132,11 +134,16 @@ def main():
     parser.add_argument("--output_dir", type=str, default="./gfr_pretrain_finewebedu", help="Output directory for model checkpoints")
     parser.add_argument("--save_model_path", type=str, default="gfr_causal_lm_final_finewebedu_v2", help="Name of the final model to save")
     parser.add_argument("--run_name", type=str, default="", help="Run name for logging")
-    parser.add_argument("--wandb_project", type=str, default="gfr_pretrain_causallm", help="Wandb project name")
-    parser.add_argument("--wandb_entity", type=str, default="your_group_name", help="Wandb entity name")
-    parser.add_argument("--wandb_api_key", type=str, default="your_wandb_api_key", help="Wandb API key for logging")
 
     args = parser.parse_args()
+
+    """
+    For wandb logging, set the following environment variables:
+
+    export WANDB_API_KEY="your_wandb_api_key"
+    export WANDB_PROJECT="gfr2_pretrain"
+    export WANDB_ENTITY="nlp-maocode"
+    """
 
     # ========= Hyperparameters and Settings ========= #
     learning_rate = 1e-4
@@ -150,24 +157,9 @@ def main():
     # Wandb settings
     now_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = args.run_name + "_" + now_datetime
-    wandb_project = args.wandb_project
-    wandb_entity = args.wandb_entity
-
-    # ========= Initialize Wandb ========= #
-    wandb.login(key=args.wandb_api_key)
-    wandb.init(project=wandb_project, entity=wandb_entity, name=run_name, config={
-        "learning_rate": learning_rate,
-        "per_device_train_batch_size": per_device_train_batch_size,
-        "gradient_accumulation_steps": gradient_accumulation_steps,
-        "num_train_epochs": num_train_epochs,
-        "max_seq_length": max_seq_length
-    })
 
     # ========= Load Llama Tokenizer ========= #
-    tokenizer = LlamaTokenizer.from_pretrained("huggyllama/llama-7b")
-    tokenizer.padding_side = "left" # In causal LM (generation purpose), padding should be on the left to align the real tokens to the right.
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    tokenizer = get_tokenizer()
 
     # ========= Load Model ========= #
     logging.info("Initializing GFR model for pretraining...")
@@ -186,6 +178,7 @@ def main():
         eos_token_id=tokenizer.eos_token_id,
     )
     model = GFRForCausalLM(config)
+    model.resize_token_embeddings(len(tokenizer))
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     num_params = sum(p.numel() for p in model.parameters())
@@ -273,6 +266,7 @@ def main():
         warmup_steps=warmup_steps,
         save_steps=10000,
         report_to="wandb",
+        run_name=run_name,
         logging_dir="./logs_pretrain",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
@@ -320,8 +314,5 @@ if __name__ == "__main__":
         --num_blocks 3 \
         --output_dir ./gfr_pretrain_finewebedu_500m \
         --save_model_path gfr_pretrain_causal_lm_final_finewebedu_v2_500m \
-        --run_name "fineweb10B_model500M" \
-        --wandb_project gfr_pretrain_causallm \
-        --wandb_entity nlp-maocode \
-        --wandb_api_key your_wandb_api_key 
+        --run_name "fineweb10B_model500M"
     """

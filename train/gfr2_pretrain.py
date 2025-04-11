@@ -43,7 +43,7 @@ class CustomTrainer(Trainer):
 
     def train(self, *args, **kwargs):
         output = super().train(*args, **kwargs)
-        logging.info(f"Total tokens processed during training: {self.total_tokens}")
+        logger.info(f"Total tokens processed during training: {self.total_tokens}")
         self.log({"total_tokens_processed": self.total_tokens})
         return output
 
@@ -103,9 +103,9 @@ class QualitativeGenerationCallback(TrainerCallback):
         wandb.log({"qualitative_outputs": decoded_outputs}, step=state.global_step)
 
         # Also print the outputs for immediate feedback.
-        logging.info("Qualitative Generation Outputs:")
+        logger.info("Qualitative Generation Outputs:")
         for prompt, generated in zip(self.prompts, decoded_outputs):
-            logging.info(f"Prompt: {prompt}\nGenerated: {generated}\n")
+            logger.info(f"Prompt: {prompt}\nGenerated: {generated}\n")
 
 def main():
     # Training arguments
@@ -138,7 +138,7 @@ def main():
     For wandb logging, set the following environment variables:
 
     export WANDB_API_KEY="your_wandb_api_key"
-    export WANDB_PROJECT="gfr2_finetuning_document_ranking"
+    export WANDB_PROJECT="gfr2_pretrain"
     export WANDB_ENTITY="nlp-maocode"
     """
 
@@ -172,7 +172,7 @@ def main():
     tokenizer = get_tokenizer()
 
     # ========= Load Model ========= #
-    logging.info("Initializing GFR2 model for pretraining...")
+    logger.info("Initializing GFR2 model for pretraining...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     config = GFR2Config(
         vocab_size=len(tokenizer), 
@@ -182,10 +182,10 @@ def main():
     model.resize_token_embeddings(len(tokenizer))
     model.to(device)
     num_params = sum(p.numel() for p in model.parameters())
-    logging.info(f"Number of parameters: {num_params}. Around {num_params / 1e6:.2f}M parameters.")
+    logger.info(f"Number of parameters: {num_params}. Around {num_params / 1e6:.2f}M parameters.")
 
     # ========= Load and Preprocess the FineWeb-Edu Dataset ========= #
-    logging.info("Loading FineWeb-Edu dataset...")
+    logger.info("Loading FineWeb-Edu dataset...")
 
     # Copied from https://huggingface.co/learn/nlp-course/chapter7/6?fw=pt
     # New version to avoid wasting tokens (according to the recommendation from HuggingFace)
@@ -217,8 +217,10 @@ def main():
     
     eval_size = args.eval_size
     raw_eval_stream = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
+
+    logger.info("Splitting FineWeb-Edu dataset...")
     eval_examples = list(islice(raw_eval_stream, eval_size))
-    logging.info(f"Loaded {len(eval_examples)} evaluation examples.")
+    logger.info(f"Loaded {len(eval_examples)} evaluation examples.")
 
     eval_dataset = Dataset.from_list(eval_examples)
     eval_dataset = eval_dataset.map(tokenize_and_chunk_function, batched=True, remove_columns=raw_eval_stream.column_names)
@@ -239,11 +241,11 @@ def main():
     # ========= Set Total Training Steps ========= #
     target_tokens = args.target_tokens
     max_training_examples = int(target_tokens / max_seq_length)
-    logging.info(f"Setting max_training_examples to {max_training_examples} documents to target {target_tokens} tokens.")
+    logger.info(f"Setting max_training_examples to {max_training_examples} documents to target {target_tokens} tokens.")
 
     steps_per_epoch = math.ceil(max_training_examples / (per_device_train_batch_size * gradient_accumulation_steps))
     total_training_steps = steps_per_epoch * num_train_epochs
-    logging.info(f"Total training steps (approx): {total_training_steps}")
+    logger.info(f"Total training steps (approx): {total_training_steps}")
 
     warmup_steps = int(0.1 * total_training_steps)
 
@@ -289,12 +291,12 @@ def main():
     )
 
     # ========= Train and Evaluate ========= #
-    logging.info("Starting training...")
+    logger.info("Starting training...")
     trainer.train()
 
     if is_main_process():
         results = trainer.evaluate(eval_dataset=test_dataset)
-        logging.info("Final Evaluation Results: %s", results)
+        logger.info("Final Evaluation Results: %s", results)
 
     # ========= Save the Final Model ========= #
     if is_main_process():
@@ -319,5 +321,5 @@ if __name__ == "__main__":
         --num_blocks 3 \
         --output_dir ./gfr2_pretrain_finewebedu_3blocks \
         --save_model_path gfr2_pretrain_causal_lm_final_finewebedu_v2_3blocks \
-        --run_name "gfr2_fineweb10B_model_3blocks" \
+        --run_name "gfr2_fineweb10B_model_3blocks"
     """
