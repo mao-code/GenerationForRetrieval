@@ -19,6 +19,8 @@ from torchinfo import summary
 def main():
     logging.info("Initializing GFR2 model for inference...")
     tokenizer = get_tokenizer()
+
+    # Around 500M parameters
     config = GFR2Config(
         vocab_size=len(tokenizer), 
         num_hidden_blocks=3,        # N GFR2Blocks,

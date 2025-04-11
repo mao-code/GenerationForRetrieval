@@ -11,7 +11,6 @@ from itertools import islice
 from transformers import (
     Trainer,
     TrainingArguments,
-    LlamaTokenizer,
     DataCollatorForLanguageModeling,
     EarlyStoppingCallback,
     TrainerCallback
@@ -19,14 +18,11 @@ from transformers import (
 from datasets import load_dataset, Dataset
 from sklearn.model_selection import train_test_split
 
-from GFR.modeling_GFR import GFRForCausalLM, GFRConfig
-
-# Setup logging
-logging.basicConfig(
-    format="%(asctime)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    level=logging.INFO,
-)
+from GFR2.modeling_GFR2 import GFR2ForCausalLM
+from GFR2.configuration_GFR2 import GFR2Config
+from GFR2.tokenizer_utils import get_tokenizer
+from utils import MainProcessFilter, is_main_process
+from train.utils import log_training_config
 
 class CustomTrainer(Trainer):
     def __init__(self, *args, **kwargs):
@@ -113,7 +109,11 @@ class QualitativeGenerationCallback(TrainerCallback):
 
 def main():
     # Training arguments
-    parser = argparse.ArgumentParser(description="Pretrain GFR Model with Custom Arguments")
+    parser = argparse.ArgumentParser(description="Pretrain GFR2 Model with Custom Arguments")
+    parser.add_argument("--deepspeed_config", type=str, default="deepspeed_pretrain_config.json",
+                    help="Path to the DeepSpeed configuration file")
+    parser.add_argument("--local_rank", type=int, default=-1, help="Local rank for distributed training")
+    # Specify multiple datasets.
     parser.add_argument("--batch_size", type=int, default=4, help="Per-device train batch size")
     parser.add_argument("--grad_accumulation_steps", type=int, default=8, help="Gradient accumulation steps")
     parser.add_argument("--target_tokens", type=int, default=10e9, help="Target number of tokens to train on (recommended 20x model parameters according to scaling laws)")
@@ -121,7 +121,6 @@ def main():
 
     # Evaluation arguments
     parser.add_argument("--per_device_eval_batch_size", type=int, default=2, help="Per-device evaluation batch size")
-    parser.add_argument("--eval_accumulation_steps", type=int, default=1, help="Evaluation accumulation steps")
     parser.add_argument("--eval_size", type=int, default=100, help="Number of examples to use for evaluation")
 
     # Model arguments
@@ -132,64 +131,58 @@ def main():
     parser.add_argument("--output_dir", type=str, default="./gfr_pretrain_finewebedu", help="Output directory for model checkpoints")
     parser.add_argument("--save_model_path", type=str, default="gfr_causal_lm_final_finewebedu_v2", help="Name of the final model to save")
     parser.add_argument("--run_name", type=str, default="", help="Run name for logging")
-    parser.add_argument("--wandb_project", type=str, default="gfr_pretrain_causallm", help="Wandb project name")
-    parser.add_argument("--wandb_entity", type=str, default="your_group_name", help="Wandb entity name")
-    parser.add_argument("--wandb_api_key", type=str, default="your_wandb_api_key", help="Wandb API key for logging")
 
     args = parser.parse_args()
+
+    """
+    For wandb logging, set the following environment variables:
+
+    export WANDB_API_KEY="your_wandb_api_key"
+    export WANDB_PROJECT="gfr2_finetuning_document_ranking"
+    export WANDB_ENTITY="nlp-maocode"
+    """
+
+    # ========= Set up logging. ========= #
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[
+            logging.StreamHandler(),
+            # logging.FileHandler(args.log_file, mode="w")
+        ],
+        force=True
+    )
+    logger = logging.getLogger()
+    logger.addFilter(MainProcessFilter(args.local_rank))
 
     # ========= Hyperparameters and Settings ========= #
     learning_rate = 1e-4
     per_device_train_batch_size = args.batch_size
     gradient_accumulation_steps = args.grad_accumulation_steps
     per_device_eval_batch_size = args.per_device_eval_batch_size
-    eval_accumulation_steps = args.eval_accumulation_steps
     num_train_epochs = args.num_train_epochs
     max_seq_length = args.max_seq_length
 
     # Wandb settings
     now_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = args.run_name + "_" + now_datetime
-    wandb_project = args.wandb_project
-    wandb_entity = args.wandb_entity
 
-    # ========= Initialize Wandb ========= #
-    wandb.login(key=args.wandb_api_key)
-    wandb.init(project=wandb_project, entity=wandb_entity, name=run_name, config={
-        "learning_rate": learning_rate,
-        "per_device_train_batch_size": per_device_train_batch_size,
-        "gradient_accumulation_steps": gradient_accumulation_steps,
-        "num_train_epochs": num_train_epochs,
-        "max_seq_length": max_seq_length
-    })
-
-    # ========= Load Llama Tokenizer ========= #
-    tokenizer = LlamaTokenizer.from_pretrained("huggyllama/llama-7b")
-    tokenizer.padding_side = "left" # In causal LM (generation purpose), padding should be on the left to align the real tokens to the right.
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    # ========= Load Tokenizer ========= #
+    tokenizer = get_tokenizer()
 
     # ========= Load Model ========= #
-    logging.info("Initializing GFR model for pretraining...")
-    config = GFRConfig(
-        vocab_size=len(tokenizer), # vocab size of the tokenizer
-        hidden_size=1024,
-        intermediate_size=1024 * 4,
-        num_attention_heads=16,
-        num_key_value_heads=16,
-        n_mamba_heads=2,
-        num_hidden_blocks=args.num_blocks,  # use value from argument parser
-        num_layers_per_block=8,
-        max_position_embeddings=1024, # no real effect
-        pad_token_id=tokenizer.pad_token_id,
-        bos_token_id=tokenizer.bos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-    )
-    model = GFRForCausalLM(config)
+    logging.info("Initializing GFR2 model for pretraining...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    config = GFR2Config(
+        vocab_size=len(tokenizer), 
+        num_hidden_blocks=args.num_blocks,  
+    )
+    model = GFR2ForCausalLM(config)
+    model.resize_token_embeddings(len(tokenizer))
     model.to(device)
     num_params = sum(p.numel() for p in model.parameters())
-    logging.info(f"Number of parameters: {num_params}")
+    logging.info(f"Number of parameters: {num_params}. Around {num_params / 1e6:.2f}M parameters.")
 
     # ========= Load and Preprocess the FineWeb-Edu Dataset ========= #
     logging.info("Loading FineWeb-Edu dataset...")
@@ -266,18 +259,21 @@ def main():
         fp16=True,
         eval_strategy="steps",
         eval_steps=1000,
-        eval_accumulation_steps=eval_accumulation_steps,
         logging_steps=50,
         logging_first_step=True,
         learning_rate=learning_rate,
         warmup_steps=warmup_steps,
         save_steps=10000,
+        save_total_limit=3,
         report_to="wandb",
-        logging_dir="./logs_pretrain",
+        run_name=run_name,
+        logging_dir="./logs_pretrain_gfr2",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
+        deepspeed=args.deepspeed_config
     )
+    log_training_config(training_args, logger)
 
     # ========= Initialize Trainer ========= #
     qualitative_callback = QualitativeGenerationCallback(tokenizer=tokenizer, max_length=50)
@@ -289,18 +285,21 @@ def main():
         eval_dataset=validation_dataset,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=3), qualitative_callback]
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=5), qualitative_callback]
     )
 
     # ========= Train and Evaluate ========= #
     logging.info("Starting training...")
     trainer.train()
-    results = trainer.evaluate(eval_dataset=test_dataset)
-    logging.info("Final Evaluation Results: %s", results)
+
+    if is_main_process():
+        results = trainer.evaluate(eval_dataset=test_dataset)
+        logging.info("Final Evaluation Results: %s", results)
 
     # ========= Save the Final Model ========= #
-    trainer.save_model(args.save_model_path)
-    wandb.finish()
+    if is_main_process():
+        trainer.save_model(args.save_model_path)
+        wandb.finish()
 
 if __name__ == "__main__":
     main()
@@ -308,20 +307,17 @@ if __name__ == "__main__":
     """
     Example usage:
 
-    python -m train.gfr_pretrain \
-        --batch_size 4 \
-        --grad_accumulation_steps 32 \
+    deepspeed --module train.gfr2_pretrain \
+        --deepspeed_config deepspeed_pretrain_config.json \
+        --batch_size 16 \
+        --grad_accumulation_steps 8 \
         --target_tokens 10000000000 \
         --num_train_epochs 1 \
-        --per_device_eval_batch_size 2 \
-        --eval_accumulation_steps 1 \
-        --eval_size 100 \
+        --per_device_eval_batch_size 4 \
+        --eval_size 256 \
         --max_seq_length 1024 \
         --num_blocks 3 \
-        --output_dir ./gfr_pretrain_finewebedu_500m \
-        --save_model_path gfr_pretrain_causal_lm_final_finewebedu_v2_500m \
-        --run_name "fineweb10B_model500M" \
-        --wandb_project gfr_pretrain_causallm \
-        --wandb_entity nlp-maocode \
-        --wandb_api_key your_wandb_api_key 
+        --output_dir ./gfr2_pretrain_finewebedu_3blocks \
+        --save_model_path gfr2_pretrain_causal_lm_final_finewebedu_v2_3blocks \
+        --run_name "gfr2_fineweb10B_model_3blocks" \
     """
