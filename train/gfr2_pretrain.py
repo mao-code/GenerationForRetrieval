@@ -128,6 +128,7 @@ def main():
     parser.add_argument("--grad_accumulation_steps", type=int, default=8, help="Gradient accumulation steps")
     parser.add_argument("--target_tokens", type=int, default=10e9, help="Target number of tokens to train on (recommended 20x model parameters according to scaling laws)")
     parser.add_argument("--num_train_epochs", type=int, default=1, help="Number of training epochs")
+    parser.add_argument("--gradient_checkpointing", action="store_true", help="Enable gradient checkpointing for memory efficiency.")
 
     # Evaluation arguments
     parser.add_argument("--per_device_eval_batch_size", type=int, default=2, help="Per-device evaluation batch size")
@@ -181,6 +182,12 @@ def main():
     model.to(device)
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Number of parameters: {num_params}. Around {num_params / 1e6:.2f}M parameters.")
+
+    if args.gradient_checkpointing:
+        # Enable gradient checkpointing for memory efficiency.
+        # This is especially useful for large models.
+        logger.info("Enabling gradient checkpointing...")
+        model.model.gradient_checkpointing_enable()
 
     # ========= Load and Preprocess the FineWeb-Edu Dataset ========= #
     # Fineweb-Edu dataset shows its high quality and effectiveness
@@ -313,6 +320,7 @@ if __name__ == "__main__":
         --grad_accumulation_steps 8 \
         --target_tokens 10000000000 \
         --num_train_epochs 1 \
+        --gradient_checkpointing \
         --per_device_eval_batch_size 1 \
         --eval_size 256 \
         --max_seq_length 1024 \

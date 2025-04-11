@@ -1387,190 +1387,64 @@ class GFR2Model(GFR2PreTrainedModel):
         all_self_attns = () if output_attentions else None
 
         layer_index = 0
-        # Process each block (each block consists of 9 sub-layers as built above).
         for block_idx in range(self.num_hidden_blocks):
-            # ----- 1) Transformer T1 -----
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            if self.gradient_checkpointing and self.training:
-                # TODO: Support gradient checkpointing for all layers
-                layer_outputs = self._gradient_checkpointing_func(
-                    self.layers[layer_index].__call__,
-                    hidden_states,
-                    original_hidden_states,
-                    attention_mask,
-                    causal_mask,
-                    past_key_values,
-                    output_attentions,
-                    position_embeddings,
-                    use_cache,
-                    cache_position,
-                )
-            else:
-                layer_outputs = self.layers[layer_index](
-                    hidden_states,
-                    original_hidden_states=original_hidden_states,
-                    attention_mask=attention_mask,
-                    causal_mask=causal_mask,
-                    past_key_value=past_key_values,
-                    output_attentions=output_attentions,
-                    position_embeddings=position_embeddings,
-                    use_cache=use_cache,
-                    cache_position=cache_position,
-                    **kwargs,
-                )
-            T1_out = layer_outputs[0]
-            if output_attentions and layer_outputs[1] is not None:
-                all_attentions += (layer_outputs[1],)
-            layer_index += 1
-            hidden_states = T1_out
+            base_idx = block_idx * 9  # 9 layers per block (including the linear porjection layer)
+            for i in range(9):
+                if output_hidden_states:
+                    all_hidden_states += (hidden_states,)
 
-            # ----- 2) Mamba 1 -----
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            layer_outputs = self.layers[layer_index](
-                hidden_states,
-                original_hidden_states=original_hidden_states,
-                attention_mask=attention_mask,
-                causal_mask=causal_mask,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                **kwargs,
-            )
-            hidden_states = layer_outputs[0]
-            if output_attentions and layer_outputs[1] is not None:
-                all_attentions += (layer_outputs[1],)
-            layer_index += 1
+                if i == 0: # Save the input of the block for skip connection
+                    input_residual = hidden_states
 
-            # ----- 3) Mamba 2 -----
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            layer_outputs = self.layers[layer_index](
-                hidden_states,
-                original_hidden_states=original_hidden_states,
-                attention_mask=attention_mask,
-                causal_mask=causal_mask,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                **kwargs,
-            )
-            hidden_states = layer_outputs[0]
-            if output_attentions and layer_outputs[1] is not None:
-                all_attentions += (layer_outputs[1],)
-            layer_index += 1
+                if i == 1: # Before the first Mamba layer, add skip connection
+                    hidden_states = hidden_states + input_residual
 
-            # ----- 4) Mamba 3 -----
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            layer_outputs = self.layers[layer_index](
-                hidden_states,
-                original_hidden_states=original_hidden_states,
-                attention_mask=attention_mask,
-                causal_mask=causal_mask,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                **kwargs,
-            )
-            hidden_states = layer_outputs[0]
-            if output_attentions and layer_outputs[1] is not None:
-                all_attentions += (layer_outputs[1],)
-            layer_index += 1
+                # Common arguments for all layers
+                layer_args = {
+                    "hidden_states": hidden_states,
+                    "original_hidden_states": original_hidden_states,
+                    "attention_mask": attention_mask,
+                    "causal_mask": causal_mask,
+                    "past_key_value": past_key_values,
+                    "output_attentions": output_attentions,
+                    "position_embeddings": position_embeddings,
+                    "use_cache": use_cache,
+                    "cache_position": cache_position,
+                    **kwargs
+                }
 
-            # Save output of Mamba 3 for skip connection.
-            mamba3_output = hidden_states
+                if self.gradient_checkpointing and self.training:
+                    if i == 5:  # Linear projection layer
+                        # nn.Linear only takes hidden_states and returns a single tensor
+                        hidden_states = self._gradient_checkpointing_func(
+                            self.layers[base_idx + i].__call__,
+                            hidden_states
+                        )
+                    else:
+                        # Attention and Mamba layers return tuples
+                        layer_outputs = self._gradient_checkpointing_func(
+                            self.layers[base_idx + i].__call__,
+                            **layer_args
+                        )
+                        hidden_states = layer_outputs[0]
+                        if output_attentions and len(layer_outputs) > 1 and layer_outputs[1] is not None:
+                            all_self_attns += (layer_outputs[1],)
+                else:
+                    if i == 5:  # Linear projection layer
+                        hidden_states = self.layers[base_idx + i](hidden_states)
+                    else:
+                        layer_outputs = self.layers[base_idx + i](**layer_args)
+                        hidden_states = layer_outputs[0]
+                        if output_attentions and len(layer_outputs) > 1 and layer_outputs[1] is not None:
+                            all_self_attns += (layer_outputs[1],)
 
-            # ----- 5) Transformer T2 -----
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            layer_outputs = self.layers[layer_index](
-                hidden_states,
-                original_hidden_states=original_hidden_states,  # T2 always concatenates with original_hidden_states
-                attention_mask=attention_mask,
-                causal_mask=causal_mask,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
-                position_embeddings=position_embeddings,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                **kwargs,
-            )
-            hidden_states = layer_outputs[0]
-            if output_attentions and layer_outputs[1] is not None:
-                all_attentions += (layer_outputs[1],)
-            layer_index += 1
+                # Special handling after specific layers
+                if i == 3:  # After Mamba 3, save for skip connection
+                    mamba3_output = hidden_states
+                elif i == 5:  # After Linear projection, add skip connection
+                    hidden_states = hidden_states + mamba3_output
 
-            # ----- 6) Linear projection after T2 -----
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            layer_outputs = self.layers[layer_index](hidden_states)
-            hidden_states = layer_outputs
-            layer_index += 1
-
-            # Add skip connection from Mamba 3.
-            hidden_states = hidden_states + mamba3_output
-
-            # ----- 7) Mamba 4 -----
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            layer_outputs = self.layers[layer_index](
-                hidden_states,
-                original_hidden_states=original_hidden_states,
-                attention_mask=attention_mask,
-                causal_mask=causal_mask,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                **kwargs,
-            )
-            hidden_states = layer_outputs[0]
-            if output_attentions and layer_outputs[1] is not None:
-                all_attentions += (layer_outputs[1],)
-            layer_index += 1
-
-            # ----- 8) Mamba 5 -----
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            layer_outputs = self.layers[layer_index](
-                hidden_states,
-                original_hidden_states=original_hidden_states,
-                attention_mask=attention_mask,
-                causal_mask=causal_mask,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                **kwargs,
-            )
-            hidden_states = layer_outputs[0]
-            if output_attentions and layer_outputs[1] is not None:
-                all_attentions += (layer_outputs[1],)
-            layer_index += 1
-
-            # ----- 9) Mamba 6 -----
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            layer_outputs = self.layers[layer_index](
-                hidden_states,
-                original_hidden_states=original_hidden_states,
-                attention_mask=attention_mask,
-                causal_mask=causal_mask,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                **kwargs,
-            )
-            hidden_states = layer_outputs[0]
-            if output_attentions and layer_outputs[1] is not None:
-                all_attentions += (layer_outputs[1],)
-            layer_index += 1
+                layer_index += 1
 
         # Final normalization.
         hidden_states = self.final_layernorm(hidden_states)
