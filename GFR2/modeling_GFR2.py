@@ -1111,6 +1111,7 @@ class GFR2MambaDecoderLayer(nn.Module):
         causal_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[GFR2HybridDynamicCache] = None,
         output_attentions: Optional[bool] = False,
+        position_embeddings: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs
@@ -1440,7 +1441,18 @@ class GFR2Model(GFR2PreTrainedModel):
                     if i == 5:  # Linear projection layer
                         hidden_states = self.layers[base_idx + i](hidden_states)
                     else:
-                        layer_outputs = self.layers[base_idx + i](**layer_args)
+                        layer_outputs = self.layers[base_idx + i](
+                            hidden_states=hidden_states,
+                            original_hidden_states=original_hidden_states,
+                            attention_mask=attention_mask,
+                            causal_mask=causal_mask,
+                            past_key_value=past_key_values,
+                            output_attentions=output_attentions,
+                            position_embeddings=position_embeddings,
+                            use_cache=use_cache,
+                            cache_position=cache_position,
+                            **kwargs
+                        )
                         hidden_states = layer_outputs[0]
                         if output_attentions and len(layer_outputs) > 1 and layer_outputs[1] is not None:
                             all_self_attns += (layer_outputs[1],)
