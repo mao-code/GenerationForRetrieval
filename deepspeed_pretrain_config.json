@@ -12,7 +12,7 @@
         "round_robin_gradients": true
     },
     "fp16": {
-      "enabled": true
+      "enabled": false
     }
 }
   

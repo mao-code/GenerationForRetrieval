@@ -263,7 +263,7 @@ def main():
         per_device_train_batch_size=per_device_train_batch_size,
         per_device_eval_batch_size=per_device_eval_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
-        fp16=True, # Cause LLVM error with fp16
+        fp16=False, # Cause LLVM error with fp16
         eval_strategy="steps",
         eval_steps=1000,
         logging_steps=50,
@@ -318,14 +318,14 @@ if __name__ == "__main__":
         --deepspeed_config deepspeed_pretrain_config.json \
         --batch_size 32 \
         --grad_accumulation_steps 2 \
-        --target_tokens 4000000000 \
+        --target_tokens 4500000000 \
         --num_train_epochs 1 \
         --gradient_checkpointing \
         --per_device_eval_batch_size 1 \
         --eval_size 100 \
         --max_seq_length 1024 \
         --num_blocks 1 \
-        --output_dir ./gfr2_pretrain_finewebedu_1block \
-        --save_model_path gfr2_pretrain_causal_lm_final_finewebedu_v2_1block \
-        --run_name "fineweb4B_model_1block"
+        --output_dir ./gfr2_pretrain_finewebedu_1block_200M \
+        --save_model_path gfr2_pretrain_causal_lm_final_finewebedu_v2_1block_200M \
+        --run_name "200M_fineweb4B_model_1block"
     """
