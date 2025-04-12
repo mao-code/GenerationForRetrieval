@@ -316,8 +316,8 @@ if __name__ == "__main__":
 
     deepspeed --module train.gfr2_pretrain \
         --deepspeed_config deepspeed_pretrain_config.json \
-        --batch_size 32 \
-        --grad_accumulation_steps 2 \
+        --batch_size 16 \
+        --grad_accumulation_steps 4 \
         --target_tokens 4500000000 \
         --num_train_epochs 1 \
         --gradient_checkpointing \
