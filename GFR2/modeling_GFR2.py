@@ -766,17 +766,17 @@ class GFR2MambaMixer(nn.Module):
                     dtype = hidden_states.dtype
                     hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
                 scan_output, ssm_state = mamba_chunk_scan_combined(
-                    hidden_states.view(batch_size, seq_len, -1, self.head_dim).float(),
-                    time_step.float(),
-                    A.float(),
-                    B.view(batch_size, seq_len, self.n_groups, -1).float(),
-                    C.view(batch_size, seq_len, self.n_groups, -1).float(),
+                    hidden_states.view(batch_size, seq_len, -1, self.head_dim),
+                    time_step,
+                    A,
+                    B.view(batch_size, seq_len, self.n_groups, -1),
+                    C.view(batch_size, seq_len, self.n_groups, -1),
                     chunk_size=self.chunk_size,
-                    D=self.D.float(),
+                    D=self.D,
                     z=None,
                     seq_idx=None,
                     return_final_states=True,
-                    dt_bias=self.dt_bias.float(),
+                    dt_bias=self.dt_bias,
                     dt_softplus=True,
                     **dt_limit_kwargs,
                 )
