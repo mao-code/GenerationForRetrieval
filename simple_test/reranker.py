@@ -11,6 +11,9 @@ from CDR.tokenizer_utils import get_tokenizer as get_tokenizer_cdr
 from Mamba2_CDR.tokenizer_utils import get_tokenizer as get_tokenizer_mamba2
 from Mamba2_CDR.configuration_mamba2 import Mamba2Config
 from Mamba2_CDR.modeling_mamba2 import Mamba2ForSequenceScoring
+from GFR2.configuration_GFR2 import GFR2Config
+from GFR2.modeling_GFR2 import GFR2ForSequenceScoring
+from GFR2.tokenizer_utils import get_tokenizer as get_tokenizer_gfr2
 from cache.cache import (
     get_documents_cache,
     move_cache_to_cpu,
@@ -290,6 +293,21 @@ def main():
     logger.info("GFR model architecture:")
     logger.info(gfr)
 
+    logger.info("Initializing GFR2 model...")
+    tokenizer_gfr2 = get_tokenizer_gfr2()
+    config = GFRConfig(
+        vocab_size=len(tokenizer_gfr2), 
+        num_hidden_blocks=3, 
+    )
+    gfr2 = GFR2ForSequenceScoring(config)
+    gfr2.resize_token_embeddings(len(tokenizer_gfr2))
+    gfr2.to(device)
+    num_params = sum(p.numel() for p in gfr2.parameters())
+    logger.info(f"Number of parameters: {num_params}")
+    gfr2.eval()  # Set model to evaluation mode.
+    logger.info("GFR2 model architecture:")
+    logger.info(gfr2)
+
     logger.info("Initializing CDR-Pythia...")
     pythia_model_name = "EleutherAI/pythia-410m"
     tokenizer_cdr_pythia = get_tokenizer_cdr(pythia_model_name)
@@ -348,6 +366,9 @@ def main():
 
         logger.info(f"Testing GFR model... {"-"* 20}") 
         test_noncache_batch_scoring(gfr, tokenizer_gfr, device, batch_size=batch_size, cache_size=False) # No Mamba Cache available, now
+
+        logger.info(f"Testing GFR model... {"-"* 20}") 
+        test_noncache_batch_scoring(gfr2, tokenizer_gfr2, device, batch_size=batch_size, cache_size=False) # No Mamba Cache available, now
 
         logger.info(f"Testing CDR-pythia model... {"-"* 20}")
         test_cache_vs_noncache_batch_scoring(cdr_pythia, tokenizer_cdr_pythia, device, batch_size=batch_size)
