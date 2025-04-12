@@ -263,7 +263,7 @@ def main():
         per_device_train_batch_size=per_device_train_batch_size,
         per_device_eval_batch_size=per_device_eval_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
-        fp16=True,
+        fp16=True, # Cause LLVM error with fp16
         eval_strategy="steps",
         eval_steps=1000,
         logging_steps=50,

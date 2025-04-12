@@ -258,7 +258,7 @@ def main():
     # Initialize the model.
     tokenizer_mla = get_tokenizer_mla()
     logger.info("Initializing MLA model...")
-    config_mla = MLAConfig(vocab_size=len(tokenizer_mla), num_hidden_layers=20)
+    config_mla = MLAConfig(vocab_size=len(tokenizer_mla), num_hidden_layers=23)
     mla = MLAForSequenceScoring(config_mla)
     mla.resize_token_embeddings(len(tokenizer_mla))
     mla.to(device)
