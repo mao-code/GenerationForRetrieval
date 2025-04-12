@@ -1194,6 +1194,7 @@ class GFR2HybridLayer(nn.Module):
         position_embeddings: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
+        **kwargs
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         
         layer_outputs = self.transformer(
