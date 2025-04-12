@@ -1929,10 +1929,10 @@ class GFR2ForSequenceScoring(GFR2PreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
-        return self.gfr.get_input_embeddings()
+        return self.gfr2.get_input_embeddings()
     
     def set_input_embeddings(self, value):
-        return self.gfr.set_input_embeddings(value)
+        return self.gfr2.set_input_embeddings(value)
 
     def forward(
         self,
