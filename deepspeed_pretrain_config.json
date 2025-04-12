@@ -1,6 +1,6 @@
 {
-    "train_batch_size": 256, 
-    "gradient_accumulation_steps": 1,
+    "train_batch_size": 128, 
+    "gradient_accumulation_steps": 2,
     "zero_optimization": {
         "stage": 2,
         "allgather_partitions": true,
@@ -12,7 +12,7 @@
         "round_robin_gradients": true
     },
     "fp16": {
-      "enabled": false
+      "enabled": true
     }
 }
   
