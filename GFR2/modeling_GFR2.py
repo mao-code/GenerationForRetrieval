@@ -1028,7 +1028,7 @@ class GFR2AttentionDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        original_hidden_states: torch.Tensor,
+        original_hidden_states: Optional[torch.Tensor]=None,
         layer_idx: Optional[int] = None,
         attention_mask: Optional[torch.Tensor] = None,
         causal_mask: Optional[torch.Tensor] = None,
@@ -1114,6 +1114,7 @@ class GFR2MambaDecoderLayer(nn.Module):
         position_embeddings: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
+        transformer_hidden_states: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
@@ -1131,8 +1132,13 @@ class GFR2MambaDecoderLayer(nn.Module):
             cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
                 Indices depicting the position of the input sequence tokens in the sequence.
         """
-
         residual = hidden_states
+
+        # `transformer_hidden_states` is the output from shared transformer + linear layer
+        # `transformer_hidden_states` is then added to the input to the mamba layer below
+        hidden_states = (
+            hidden_states + transformer_hidden_states if transformer_hidden_states is not None else hidden_states
+        )
 
         hidden_states = self.input_layernorm(hidden_states)
 
@@ -1163,6 +1169,177 @@ class GFR2MambaDecoderLayer(nn.Module):
             outputs += (past_key_value,)
 
         return outputs
+
+class GFR2HybridLayer(nn.Module):
+    def __init__(
+        self, 
+        transformer: GFR2AttentionDecoderLayer, 
+        linear: nn.Linear, 
+        mamba: GFR2MambaDecoderLayer
+    ):
+        super().__init__()
+        self.linear = linear
+        self.mamba_decoder = mamba
+        self.transformer = transformer
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        original_hidden_states: Optional[torch.Tensor] = None,
+        layer_idx: Optional[int] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        causal_mask: Optional[torch.Tensor] = None,
+        past_key_value: Optional[GFR2HybridDynamicCache] = None,
+        output_attentions: Optional[bool] = False,
+        position_embeddings: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        
+        layer_outputs = self.transformer(
+            hidden_states,
+            original_hidden_states=original_hidden_states,
+            layer_idx=layer_idx,
+            attention_mask=causal_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            position_embeddings=position_embeddings,
+            use_cache=use_cache,
+            cache_position=cache_position,
+        )
+
+        transformer_hidden_states = layer_outputs[0]
+
+        if output_attentions:
+            self_attn_weights = layer_outputs[1]
+
+        transformer_hidden_states = self.linear(transformer_hidden_states)
+
+        layer_outputs = self.mamba_decoder(
+            hidden_states,
+            attention_mask=attention_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            position_embeddings=position_embeddings,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            transformer_hidden_states=transformer_hidden_states,
+        )
+
+        if output_attentions:
+            layer_outputs = (layer_outputs[0], self_attn_weights) + layer_outputs[2:]
+
+        return layer_outputs
+
+class GFR2Block(nn.Module):
+    def __init__(self, config, base_idx: int):
+        """
+        Each block consists of:
+         - Pre-hybrid processing: one attention layer followed by three Mamba layers.
+         - A hybrid layer that internally performs concatenation with the original hidden state,
+           applies a transformer (with concat_input), a linear projection, and a Mamba step (Mamba4).
+        """
+        super().__init__()
+        # Pre-hybrid layers
+        self.attention = GFR2AttentionDecoderLayer(config, layer_idx=base_idx+0, concat_input=False)
+        self.mamba1 = GFR2MambaDecoderLayer(config, layer_idx=base_idx+1)
+        self.mamba2 = GFR2MambaDecoderLayer(config, layer_idx=base_idx+2)
+        self.mamba3 = GFR2MambaDecoderLayer(config, layer_idx=base_idx+3)
+        
+        # Hybrid layer that combines steps 7-11 (and includes the Mamba block internally)
+        self.hybrid = GFR2HybridLayer(
+            transformer=GFR2AttentionDecoderLayer(config, layer_idx=base_idx+4, concat_input=True),
+            linear=nn.Linear(2 * config.hidden_size, config.hidden_size, bias=True),
+            mamba=GFR2MambaDecoderLayer(config, layer_idx=base_idx+5)
+        )
+
+        self.mamba5 = GFR2MambaDecoderLayer(config, layer_idx=base_idx+6)
+        self.mamba6 = GFR2MambaDecoderLayer(config, layer_idx=base_idx+7)
+
+    def forward(self,
+        hidden_states: torch.Tensor,
+        original_hidden_states: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        causal_mask: Optional[torch.Tensor] = None,
+        past_key_value: Optional[GFR2HybridDynamicCache] = None,
+        output_attentions: Optional[bool] = False,
+        position_embeddings: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs
+    ):
+        block_attns = [] if output_attentions else None
+
+        residual = hidden_states
+        attn_out = self.attention(
+            hidden_states,
+            attention_mask=causal_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            position_embeddings=position_embeddings,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs
+        )
+        hidden_states = residual + attn_out[0]
+        if output_attentions:
+            block_attns.append(attn_out[1])
+        
+        # Mamba layers 1-3.
+        for mamba_layer in [self.mamba1, self.mamba2, self.mamba3]:
+            mamba_out = mamba_layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                position_embeddings=position_embeddings,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs
+            )
+            hidden_states = mamba_out[0]
+            if output_attentions:
+                block_attns.append(mamba_out[1])
+        
+        # Hybrid processing:
+        # This internally concatenates the current hidden_states with the original embeddings,
+        # applies a transformer, projects back to hidden_size, adds a residual, and then runs a Mamba block.
+        hybrid_out = self.hybrid(
+            hidden_states,
+            original_hidden_states=original_hidden_states,
+            attention_mask=attention_mask,
+            causal_mask=causal_mask,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            position_embeddings=position_embeddings,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs
+        )
+        hidden_states = hybrid_out[0]
+        if output_attentions:
+            block_attns.append(hybrid_out[1])
+
+        # Mamba layers 5 and 6.
+        for mamba_layer in [self.mamba5, self.mamba6]:
+            mamba_out = mamba_layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                position_embeddings=position_embeddings,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                **kwargs
+            )
+            hidden_states = mamba_out[0]
+            if output_attentions:
+                block_attns.append(mamba_out[1])
+        
+        if output_attentions:
+            return (hidden_states, block_attns)
+        
+        return (hidden_states,)
 
 class GFR2PreTrainedModel(PreTrainedModel):
     config_class = GFR2Config
@@ -1203,13 +1380,6 @@ class GFR2PreTrainedModel(PreTrainedModel):
             module.dt_bias._no_reinit = True
 
 class GFR2Model(GFR2PreTrainedModel):
-    """
-    Model consisting of *config.num_hidden_layers* layers.
-
-    Args:
-        config: GFR2Config
-    """
-
     def __init__(self, config: GFR2Config):
         super().__init__(config)
         self.config = config
@@ -1220,80 +1390,16 @@ class GFR2Model(GFR2PreTrainedModel):
         self._tied_weights_keys = ["embed_tokens.weight"]
 
         self.num_hidden_blocks = getattr(config, "num_hidden_blocks", 1)
-        self.num_layers_per_block = getattr(config, "num_layers_per_block", 8)
+        self.num_layers_per_block = getattr(config, "num_layers_per_block", 8) # not include the linear layer
         self.num_hidden_layers = config.num_hidden_layers  # total number of sub-layers
 
         self.layers = nn.ModuleList()
-        for block_idx in range(self.num_hidden_blocks):
-            base_idx = block_idx * self.num_layers_per_block
-            # 1) Transformer T1.
-            self.layers.append(
-                GFR2AttentionDecoderLayer(
-                    config,
-                    layer_idx=base_idx + 0,
-                    concat_input=False
-                )
-            )
-
-            # 2) Mamba 1.
-            self.layers.append(
-                GFR2MambaDecoderLayer(
-                    config,
-                    layer_idx=base_idx + 1
-                )
-            )
-            # 3) Mamba 2.
-            self.layers.append(
-                GFR2MambaDecoderLayer(
-                    config,
-                    layer_idx=base_idx + 2
-                )
-            )
-            # 4) Mamba 3.
-            self.layers.append(
-                GFR2MambaDecoderLayer(
-                    config,
-                    layer_idx=base_idx + 3
-                )
-            )
-
-            # 5) Transformer T2 (always with concat_input=True).
-            self.layers.append(
-                GFR2AttentionDecoderLayer(
-                    config,
-                    layer_idx=base_idx + 4,
-                    concat_input=True
-                )
-            )
-            # 6) Linear projection to convert 2*hidden_size back to hidden_size.
-            self.layers.append(
-                nn.Linear(
-                    2 * config.hidden_size, 
-                    config.hidden_size, bias=True
-                )
-            )
-
-            # 7) Mamba 4.
-            self.layers.append(
-                GFR2MambaDecoderLayer(
-                    config,
-                    layer_idx=base_idx + 5
-                )
-            )
-            # 8) Mamba 5.
-            self.layers.append(
-                GFR2MambaDecoderLayer(
-                    config,
-                    layer_idx=base_idx + 6
-                )
-            )
-            # 9) Mamba 6.
-            self.layers.append(
-                GFR2MambaDecoderLayer(
-                    config,
-                    layer_idx=base_idx + 7
-                )
-            )
+        # Build the model as a stack of blocks.
+        # Here each block uses 8 internal layer indices (1 attn, 3 mamba, 1 attn + 1 linear(not included), 3 mamba).
+        self.blocks = nn.ModuleList([
+            GFR2Block(config, base_idx=block_idx * self.num_layers_per_block)
+            for block_idx in range(self.num_hidden_blocks)
+        ])
 
         # Final normalization layer.
         self.final_layernorm = GFR2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -1383,80 +1489,46 @@ class GFR2Model(GFR2PreTrainedModel):
         else:
             position_embeddings = None
 
-        all_hidden_states = () if output_hidden_states else None
-        all_self_attns = () if output_attentions else None
+        all_hidden_states = [] if output_hidden_states else None
+        all_self_attns = [] if output_attentions else None
 
-        layer_index = 0
-        for block_idx in range(self.num_hidden_blocks):
-            base_idx = block_idx * 9  # 9 layers per block (including the linear porjection layer)
-            mamba3_output = None  # will be assigned in layer index 3
+        # Process each hybrid block sequentially.
+        for block_idx, block in enumerate(self.blocks):
+            if output_hidden_states:
+                all_hidden_states.append(hidden_states)
 
-            for i in range(9):
-                if output_hidden_states:
-                    all_hidden_states += (hidden_states,)
+            if self.gradient_checkpointing and self.training:
+                block_out = self._gradient_checkpointing_func(
+                    block.__call__,
+                    hidden_states,
+                    original_hidden_states,
+                    attention_mask,
+                    causal_mask,
+                    past_key_values,
+                    output_attentions,
+                    position_embeddings,
+                    use_cache,
+                    cache_position
+                )
+            else:
+                block_out = block(
+                    hidden_states,
+                    original_hidden_states,
+                    attention_mask=attention_mask,
+                    causal_mask=causal_mask,
+                    past_key_value=past_key_values,
+                    output_attentions=output_attentions,
+                    position_embeddings=position_embeddings,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    **kwargs
+                )
 
-                if i == 0: # Save the input of the block for skip connection
-                    input_residual = hidden_states
-                if i == 1: # Before the first Mamba layer, add skip connection
-                    hidden_states = hidden_states + input_residual
+            hidden_states = block_out[0]
 
-                if self.gradient_checkpointing and self.training:
-                    def custom_forward(hidden_states, mamba3_input=None):
-                        # For i == 5, use mamba3_input; otherwise, ignore it
-                        if i == 5:
-                            projected = self.layers[base_idx + 5](hidden_states)
-                            return (projected + mamba3_input,)
-                        else:
-                            return self.layers[base_idx + i](
-                                hidden_states=hidden_states,
-                                original_hidden_states=original_hidden_states,
-                                attention_mask=attention_mask,
-                                causal_mask=causal_mask,
-                                past_key_value=past_key_values,
-                                output_attentions=output_attentions,
-                                position_embeddings=position_embeddings,
-                                use_cache=use_cache,
-                                cache_position=cache_position,
-                                **kwargs
-                            )
-
-                    # Pass mamba3_output only for i == 5
-                    inputs = (
-                        (hidden_states, mamba3_output) if i == 5 else (hidden_states,)
-                    )
-                    layer_outputs = self._gradient_checkpointing_func(
-                        custom_forward,
-                        *inputs
-                    )
-                    hidden_states = layer_outputs[0]
-                    if output_attentions and len(layer_outputs) > 1 and layer_outputs[1] is not None:
-                        all_self_attns += (layer_outputs[1],)
-                else:
-                    if i == 5:  # Linear projection layer
-                        projection = self.layers[base_idx + 5](hidden_states)
-                        hidden_states = projection + mamba3_output
-                    else:
-                        layer_outputs = self.layers[base_idx + i](
-                            hidden_states=hidden_states,
-                            original_hidden_states=original_hidden_states,
-                            attention_mask=attention_mask,
-                            causal_mask=causal_mask,
-                            past_key_value=past_key_values,
-                            output_attentions=output_attentions,
-                            position_embeddings=position_embeddings,
-                            use_cache=use_cache,
-                            cache_position=cache_position,
-                            **kwargs
-                        )
-                        hidden_states = layer_outputs[0]
-                        if output_attentions and len(layer_outputs) > 1 and layer_outputs[1] is not None:
-                            all_self_attns += (layer_outputs[1],)
-
-                # Special handling after specific layers
-                if i == 3:
-                    mamba3_output = hidden_states.clone()
-
-                layer_index += 1
+            if output_attentions:
+                if block_out[1] is not None:
+                    all_self_attns.extend(block_out[1])
 
         # Final normalization.
         hidden_states = self.final_layernorm(hidden_states)
@@ -1513,7 +1585,7 @@ class GFR2Model(GFR2PreTrainedModel):
 
         return causal_mask
 
-class GFRModelWithTokenTypes(GFR2Model):
+class GFR2ModelWithTokenTypes(GFR2Model):
     def __init__(self, config):
         super().__init__(config)
         # Add token type embeddings with a small vocabulary (e.g., 2 types: 0 for document, 1 for query)
@@ -1849,7 +1921,7 @@ class GFR2ForSequenceScoring(GFR2PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.config = config
-        self.gfr2 = GFRModelWithTokenTypes(config)
+        self.gfr2 = GFR2ModelWithTokenTypes(config)
 
         self.token_type_embedding = nn.Embedding(2, config.hidden_size)
         self.score_head = nn.Linear(config.hidden_size, 1, bias=False)
