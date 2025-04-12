@@ -295,7 +295,7 @@ def main():
 
     logger.info("Initializing GFR2 model...")
     tokenizer_gfr2 = get_tokenizer_gfr2()
-    config = GFRConfig(
+    config = GFR2Config(
         vocab_size=len(tokenizer_gfr2), 
         num_hidden_blocks=3, 
     )
