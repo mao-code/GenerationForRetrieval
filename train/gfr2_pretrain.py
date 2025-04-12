@@ -316,16 +316,16 @@ if __name__ == "__main__":
 
     deepspeed --module train.gfr2_pretrain \
         --deepspeed_config deepspeed_pretrain_config.json \
-        --batch_size 16 \
-        --grad_accumulation_steps 2 \
-        --target_tokens 10000000000 \
+        --batch_size 32 \
+        --grad_accumulation_steps 1 \
+        --target_tokens 7400000000 \
         --num_train_epochs 1 \
         --gradient_checkpointing \
         --per_device_eval_batch_size 1 \
         --eval_size 100 \
         --max_seq_length 1024 \
-        --num_blocks 3 \
-        --output_dir ./gfr2_pretrain_finewebedu_3blocks \
-        --save_model_path gfr2_pretrain_causal_lm_final_finewebedu_v2_3blocks \
-        --run_name "gfr2_fineweb10B_model_3blocks"
+        --num_blocks 2 \
+        --output_dir ./gfr2_pretrain_finewebedu_2blocks_370m \
+        --save_model_path gfr2_pretrain_causal_lm_final_finewebedu_v2_2blocks_370m \
+        --run_name "370m_fineweb7B_model_2blocks"
     """
