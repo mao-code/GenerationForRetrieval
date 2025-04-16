@@ -30,14 +30,28 @@ def main():
         input_ids = tokenizer("The meaning of life is", return_tensors="pt").input_ids.to('cuda')
         model_output = mamba2(input_ids=input_ids, return_dict=True)
 
-        conv_states = model_output.cache_params.conv_states
-        ssm_states = model_output.cache_params.ssm_states
+        cache_params = model_output.cache_params
+        conv_states = cache_params.conv_states
+        ssm_states = cache_params.ssm_states
+        logits = model_output.logits
         print("Conv states shape:", conv_states.shape)
         print("SSM states shape:", ssm_states.shape)
+        print("Logits shape:", logits.shape)
 
         # Generate a sequence from the model.
         outputs = mamba2.generate(input_ids=input_ids, max_length=50)
         print("Generated sequence:", tokenizer.decode(outputs[0], skip_special_tokens=True))
+
+        # Test with cache
+        print("Testing with cache...")
+        model_output = mamba2(input_ids=input_ids, return_dict=True, cache_params=cache_params, cache_fwd=True)
+        cache_params = model_output.cache_params
+        conv_states = cache_params.conv_states
+        ssm_states = cache_params.ssm_states
+        logits = model_output.logits
+        print("Conv states shape:", conv_states.shape)
+        print("SSM states shape:", ssm_states.shape)
+        print("Logits shape:", logits.shape)
 
 if __name__ == "__main__":
     main()
