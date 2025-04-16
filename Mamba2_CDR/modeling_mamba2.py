@@ -298,6 +298,123 @@ class Mamba2Mixer(nn.Module):
                 " https://github.com/Dao-AILab/causal-conv1d"
             )
 
+    def cache_fwd(
+        self,
+        hidden_states: torch.Tensor,
+        prev_ssm_state: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward new input tokens with incremental SSM state update.
+
+        This function takes new input tokens along with the previous SSM hidden state
+        (cache from the last steps, H_n). It processes the inputs through the projection,
+        convolution, and SSM transformation stages using mamba_chunk_scan_combined,
+        where the `initial_states` argument is set to the provided previous SSM state.
+        The output tokens and new SSM state are returned.
+
+        Args:
+            hidden_states (torch.Tensor): New input tokens of shape (batch, seq_len, hidden_size).
+            prev_ssm_state (torch.Tensor): Cached SSM state from previous time steps,
+                with shape (batch, num_heads, head_dim, state_size).
+            attention_mask (Optional[torch.Tensor]): Optional attention mask for handling padded tokens.
+
+        Returns:
+            out (torch.Tensor): Output tokens of shape (batch, seq_len, hidden_size) after processing.
+            new_ssm_state (torch.Tensor): Updated SSM state with shape (batch, num_heads, head_dim, state_size).
+        """
+        # 1. Project the new hidden states
+        projected_states = self.in_proj(hidden_states)
+        batch_size, seq_len, _ = projected_states.shape
+
+        # Calculate the group state size and derive d_mlp based on the projection dimensions
+        groups_time_state_size = self.n_groups * self.ssm_state_size
+        d_mlp = (
+            projected_states.shape[-1]
+            - 2 * self.intermediate_size
+            - 2 * groups_time_state_size
+            - self.num_heads
+        ) // 2
+
+        # Split the projected states.
+        # We assume the projected tensor is arranged as:
+        # [prefix_mlp, suffix_mlp, gate, conv_data, dt]
+        # where we use `gate`, `conv_data`, and `dt` for the following computation.
+        # (The two d_mlp parts are discarded in this example.)
+        _, _, gate, conv_data, dt = projected_states.split(
+            [d_mlp, d_mlp, self.intermediate_size, self.conv_dim, self.num_heads],
+            dim=-1,
+        )
+
+        # Optionally, mask padding tokens in the convolution branch
+        conv_data = apply_mask_to_padding_states(conv_data, attention_mask)
+
+        # 2. Perform the convolution transformation on conv_data.
+        # For activation functions not in ["silu", "swish"] we use a direct conv1d call with activation.
+        if self.activation not in ["silu", "swish"]:
+            conv_out = self.act(
+                self.conv1d(conv_data.transpose(1, 2))[..., :seq_len].transpose(1, 2)
+            )
+        else:
+            conv_out = causal_conv1d_fn(
+                x=conv_data.transpose(1, 2),
+                weight=self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+            ).transpose(1, 2)
+
+        # Optionally, apply the mask again on conv_out if necessary
+        conv_out = apply_mask_to_padding_states(conv_out, attention_mask)
+
+        # 3. Split the convolution output into three parts:
+        #    - Processed hidden states for SSM transformation
+        #    - B and C components for the SSM update
+        hidden_states_conv, B, C = torch.split(
+            conv_out,
+            [self.intermediate_size, groups_time_state_size, groups_time_state_size],
+            dim=-1,
+        )
+
+        # 4. Prepare parameters for the SSM update.
+        A = -torch.exp(self.A_log.float())  # (num_heads,)
+        dt_limit_kwargs = {} if self.time_step_limit == (0.0, float("inf")) else {"dt_limit": self.time_step_limit}
+
+        # Reshape the inputs for the SSM transformation.
+        # hidden_states_conv is reshaped from (batch, seq_len, intermediate_size) into shape:
+        # (batch, seq_len, nheads, head_dim)
+        hidden_states_for_ssm = hidden_states_conv.view(batch_size, seq_len, -1, self.head_dim)
+        B = B.view(batch_size, seq_len, self.n_groups, -1)
+        C = C.view(batch_size, seq_len, self.n_groups, -1)
+
+        # 5. Call the combined SSM transformation function.
+        # Note that we pass the previous SSM state via the `initial_states` argument.
+        scan_output, new_ssm_state = mamba_chunk_scan_combined(
+            hidden_states_for_ssm,
+            dt,
+            A,
+            B,
+            C,
+            chunk_size=self.chunk_size,
+            D=self.D,
+            z=None,
+            dt_bias=self.dt_bias,
+            initial_states=prev_ssm_state,  # <-- Pass the previous cache here
+            seq_idx=None,
+            return_final_states=True,
+            dt_softplus=True,
+            **dt_limit_kwargs,
+        )
+
+        # 6. Reshape the SSM output and apply normalization via the gated normalization.
+        # scan_output comes out as (batch, seq_len, nheads, head_dim) so we reshape it to combine the head dimensions.
+        scan_output = scan_output.view(batch_size, seq_len, -1)
+        normalized_output = self.norm(scan_output, gate)
+
+        # 7. Finally, perform the linear output projection and return both outputs.
+        out = self.out_proj(normalized_output)
+        return out
+
+
     def cuda_kernels_forward(
         self,
         hidden_states: torch.Tensor,
@@ -658,8 +775,14 @@ class Mamba2Mixer(nn.Module):
         cache_params: Optional[Mamba2Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+
+        cache_fwd: Optional[bool] = False
     ):
         if is_fast_path_available and "cuda" in self.in_proj.weight.device.type:
+            # Our new forward path with cache flag
+            if cache_fwd:
+                return self.cache_fwd(hidden_states, cache_params.ssm_states[self.layer_idx], attention_mask)
+
             return self.cuda_kernels_forward(hidden_states, cache_params, cache_position, attention_mask)
         dtype = hidden_states.dtype
         if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
@@ -1085,6 +1208,8 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+
+        cache_fwd: Optional[bool] = False,
         **kwargs,  # for now we need this for generation
     ) -> Union[Tuple, Mamba2CausalLMOutput]:
         r"""
@@ -1104,6 +1229,8 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel, GenerationMixin):
             use_cache=use_cache,
             cache_position=cache_position,
             attention_mask=attention_mask,
+
+            cache_fwd = cache_fwd
         )
         hidden_states = mamba2_outputs[0]
 
