@@ -1047,6 +1047,8 @@ class Mamba2Model(Mamba2PreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+
+        cache_fwd: Optional[bool] = False,
         **kwargs,
     ) -> Union[Tuple, Mamba2Output]:
         output_hidden_states = (
@@ -1095,6 +1097,8 @@ class Mamba2Model(Mamba2PreTrainedModel):
                     cache_params=cache_params,
                     cache_position=cache_position,
                     attention_mask=attention_mask,
+
+                    cache_fwd = cache_fwd
                 )
 
             if output_hidden_states:
