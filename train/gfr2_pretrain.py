@@ -318,7 +318,7 @@ if __name__ == "__main__":
         --deepspeed_config deepspeed_pretrain_config.json \
         --batch_size 16 \
         --grad_accumulation_steps 4 \
-        --target_tokens 4500000000 \
+        --target_tokens 4000000000 \
         --num_train_epochs 1 \
         --gradient_checkpointing \
         --per_device_eval_batch_size 1 \

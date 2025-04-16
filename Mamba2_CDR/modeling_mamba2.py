@@ -1130,7 +1130,7 @@ class Mamba2ForCausalLM(Mamba2PreTrainedModel, GenerationMixin):
             cache_params=mamba2_outputs.cache_params,
             hidden_states=mamba2_outputs.hidden_states,
         )
-
+    
 class Mamba2ForSequenceScoring(Mamba2PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
