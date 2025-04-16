@@ -44,7 +44,16 @@ def main():
 
         # Test with cache
         print("Testing with cache...")
-        model_output = mamba2(input_ids=input_ids, return_dict=True, cache_params=cache_params, cache_fwd=True)
+        new_input_ids = tokenizer("It is really interesting that", return_tensors="pt").input_ids.to('cuda')
+        L_prev = input_ids.shape[1]
+        cache_position = torch.tensor([L_prev], dtype=torch.long, device=input_ids.device)
+        model_output = mamba2(
+            input_ids=new_input_ids, 
+            return_dict=True, 
+            cache_params=cache_params, 
+            use_cache=True,
+            cache_position=cache_position,
+            cache_fwd=True)
         cache_params = model_output.cache_params
         conv_states = cache_params.conv_states
         ssm_states = cache_params.ssm_states
